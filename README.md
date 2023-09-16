@@ -55,7 +55,7 @@ to use is as follows:
             - "sequence" (M,) array of integers 0-19, based on sorted 3-letter AA codes
 ```
 
-However our pipeline can handle any structure so long as the key structure
+However our pipeline can handle any format so long as the key format
 from `receptor`/`ligand` and below is consistent. In our case, `receptor` refers to the 
 epitope and `ligand` refers to the CDR loop.
 
