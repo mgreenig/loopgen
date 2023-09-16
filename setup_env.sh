@@ -22,13 +22,15 @@ fi
 
 conda install nomkl
 
+mamba env update -n $env_name -f envs/environment.yml
+
 # make sure to install compatible torch packages if on Linux to allow GPU usage
 if [ $OS == "Linux" ]; then
   pip install https://download.pytorch.org/whl/cu117/torch-2.0.1%2Bcu117-cp311-cp311-linux_x86_64.whl
   pip install https://data.pyg.org/whl/torch-2.0.0%2Bcu117/torch_scatter-2.1.1%2Bpt20cu117-cp311-cp311-linux_x86_64.whl
   pip install https://data.pyg.org/whl/torch-2.0.0%2Bcu117/torch_sparse-0.6.17%2Bpt20cu117-cp311-cp311-linux_x86_64.whl
   pip install https://data.pyg.org/whl/torch-2.0.0%2Bcu117/torch_cluster-1.6.1%2Bpt20cu117-cp311-cp311-linux_x86_64.whl
-else if [ $OS == "Mac" ]; then
+elif [ $OS == "Mac" ]; then
   pip install https://download.pytorch.org/whl/cpu/torch-2.0.1-cp311-none-macosx_10_9_x86_64.whl
   pip install numpy==1.25.2 --force-reinstall
   pip install scipy==1.11.1 --force-reinstall
