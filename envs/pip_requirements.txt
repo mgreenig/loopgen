@@ -1,0 +1,4 @@
+h5py==3.9.0
+torch-geometric==2.3.1
+pytorch-lightning==2.0.1
+e3nn==0.5.1

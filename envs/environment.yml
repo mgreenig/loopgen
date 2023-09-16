@@ -1,0 +1,24 @@
+name: loopgen
+channels:
+  - conda-forge
+  - anaconda
+  - pytorch
+  - defaults
+  - bioconda
+dependencies:
+  - python=3.11.5
+  - biopython
+  - scipy
+  - pyyaml
+  - scikit-learn
+  - pandas
+  - mlflow=2.5.0
+  - numpy
+  - matplotlib
+  - seaborn
+  - plotly
+  - jupyter
+  - pip
+  - einops
+  - pytest
+  - urllib3

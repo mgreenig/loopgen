@@ -1,0 +1,32 @@
+#Experiment Parameters
+
+experiment_name: "Abdiff training"
+steps_per_log: 1
+train_test_val_splits: [0.50, 0.10, 0.40]
+run_name: "base_50_percent_train_split"
+# data_path: "/spinning1/sharedby/mg989/datasets/sabdab_90b.hdf5"
+checkpoint_outfile: "best_weights"
+checkpoint_metric: "validation_loss"
+batch_size: 128
+
+
+#Abdiff Model Parameters (incomplete)
+learning_rate: 0.0001 # only needed if training
+rotation_beta_schedule: "logarithmic"
+translation_beta_schedule: "linear"
+num_time_steps: 100
+min_rot_beta: 0.1
+max_rot_beta: 1.5
+min_trans_beta: 0.0001
+max_trans_beta: 20
+weight_loss_by_norm: True
+
+#DataModule Parameters (incomplete)
+
+fix_cdr_centre: True
+self_conditioning_rate: 0.5
+add_pad_cdr_features: True
+
+#Output Paths
+out_dir: "./base_50_percent_train_split"
+# test_results_filepath: "test_results.csv"
