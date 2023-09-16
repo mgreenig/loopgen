@@ -40,7 +40,7 @@ And you are ready to go!
 
 ## Data
 
-This package relies on antibody/antigen structural information. We have found that 
+This package relies on CDR/epitope structural information. We have found that 
 these data types are best stored using `hdf5` format. The basic structure we choose 
 to use is as follows:
 

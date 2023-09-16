@@ -22,9 +22,6 @@ fi
 
 conda install nomkl
 
-# install all the relevant packages
-mamba env update -n loopgen --file envs/environment.yml
-
 # make sure to install compatible torch packages if on Linux to allow GPU usage
 if [ $OS == "Linux" ]; then
   pip install https://download.pytorch.org/whl/cu117/torch-2.0.1%2Bcu117-cp311-cp311-linux_x86_64.whl
