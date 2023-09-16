@@ -12,18 +12,18 @@ esac
 
 # set up conda environment
 mamba create -n $env_name
-eval "$(mamba shell.bash hook)"
-mamba activate $env_name
+eval "$(conda shell.bash hook)"
+conda activate $env_name
 
 # if on a mac and not on an ARM chip change the env config
 if [ $OS == "Mac" ] && [ $(uname -p) != "arm" ]; then
-  mamba config --env --set subdir osx-64
+  conda config --env --set subdir osx-64
 fi
 
-mamba install nomkl
+conda install nomkl
 
 # install all the relevant packages
-mamba env update --file envs/environment.yml
+mamba env update -n loopgen --file envs/environment.yml
 
 # make sure to install compatible torch packages if on Linux to allow GPU usage
 if [ $OS == "Linux" ]; then
@@ -52,7 +52,7 @@ pip install -r envs/pip_requirements.txt
 pip install .
 
 # set lib path for C++ libraries
-env_path=$(mamba info --base)/envs/$env_name
+env_path=$(conda info --base)/envs/$env_name
 
 activate_env_vars=$env_path/etc/conda/activate.d/env_vars.sh
 echo "export LD_LIBRARY_PATH=$env_path/lib:$LD_LIBRARY_PATH" > $activate_env_vars
