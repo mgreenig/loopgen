@@ -22,8 +22,10 @@ fi
 
 conda install nomkl
 
+conda install -c conda-forge mamba
+
 # install all the relevant packages
-conda env update --file envs/environment.yml
+mamba env update --file envs/environment.yml
 
 # make sure to install compatible torch packages if on Linux to allow GPU usage
 if [ $OS == "Linux" ]; then
