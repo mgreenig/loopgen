@@ -11,7 +11,7 @@ case "${unameOut}" in
 esac
 
 # set up conda environment
-mamba create -n $env_name
+conda create -n $env_name
 eval "$(conda shell.bash hook)"
 conda activate $env_name
 
