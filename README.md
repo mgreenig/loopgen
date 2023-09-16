@@ -11,6 +11,12 @@ Follow the steps below to set up the virtual environment for this project.
 If you have not installed miniconda on your computer, follow the instructions here to 
 [install miniconda](https://conda.io/projects/conda/en/latest/user-guide/install/index.html).
 
+Once you have miniconda, you need to install `mamba` in the base environment:
+
+```
+conda install mamba -n base -c conda-forge
+```
+
 Then all you need to do is clone the repository and move into it:
 
 ```bash
