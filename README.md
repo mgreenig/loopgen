@@ -55,7 +55,9 @@ to use is as follows:
             - "sequence" (M,) array of integers 0-19, based on sorted 3-letter AA codes
 ```
 
-In our case, `receptor` refers to the epitope and `ligand` refers to the CDR loop.
+However our pipeline can handle any structure so long as the key structure
+from `receptor`/`ligand` and below is consistent. In our case, `receptor` refers to the 
+epitope and `ligand` refers to the CDR loop.
 
 If you have an `hdf5` file with this structure, you can read it in as follows:
 
@@ -64,3 +66,23 @@ from loopgen import ReceptorLigandDataset
 
 dataset = ReceptorLigandDataset.from_hdf5_file(<path/to/hdf5/file>)
 ```
+
+
+## Usage
+
+The basic structure of the command-line interface is as follows:
+
+```
+loopgen <model> <command> /path/to/hdf5/file [options]
+```
+
+Where `<model>` can be either `frames` (diffusion over SE3) or `coords` (diffusion over R3). 
+For `command`, users can select either `train` (train a model) or `test` (sample from a model),
+both of which use an HDF5 dataset (formatted as above) as input. For example, to train a frame
+diffusion model, run:
+
+```
+loopgen frames train /path/to/hdf5/file --splits /path/to/json/file --config /path/to/yaml/file 
+```
+
+You can see all the relevant options for each command by running `loopgen <model> <command> --help`.

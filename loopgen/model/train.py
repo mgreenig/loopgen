@@ -43,13 +43,6 @@ def add_train_args(parser: argparse.ArgumentParser) -> None:
         help="Path to YAML file containing the settings.",
     )
     parser.add_argument(
-        "-e",
-        "--n_epochs",
-        type=int,
-        required=True,
-        help="Number of epochs to train for.",
-    )
-    parser.add_argument(
         "--checkpoint",
         default=None,
         help="Path to a PyTorch checkpoint file containing model weights.",
@@ -88,7 +81,6 @@ def train(
     settings: TrainSettings,
     model_class: Type[pl.LightningModule],
     out_dir: str,
-    num_epochs: int,
     checkpoint: Optional[str],
     restore_full_state: bool,
     accelerator: Literal["cpu", "gpu"],
@@ -103,7 +95,6 @@ def train(
     :param settings: The settings for the model.
     :param model_class: The model class to use.
     :param out_dir: The directory in which to save the results.
-    :param num_epochs: The number of epochs to train for.
     :param checkpoint: The path to a PyTorch checkpoint file containing model weights.
     :param restore_full_state: Whether to restore the full state of the Trainer (including
         optimizer state, schedulers, etc.) from the provided checkpoint. Only applicable if
@@ -200,7 +191,6 @@ def train_from_args(
         splits = load_splits_file(args.splits, dataset)
         settings = TrainSettings.from_yaml(args.config)
 
-        n_epochs = args.n_epochs
         out_dir = args.out_dir
         checkpoint = args.checkpoint
         restore_full_state = args.restore_full_state
@@ -241,7 +231,6 @@ def train_from_args(
             settings,
             model_class,
             out_dir,
-            n_epochs,
             checkpoint,
             restore_full_state,
             accelerator,
