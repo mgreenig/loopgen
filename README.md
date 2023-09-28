@@ -46,19 +46,19 @@ And you are ready to go!
 The basic structure of the command-line interface is as follows:
 
 ```
-loopgen <model> <command> /path/to/hdf5/file [options]
+loopgen <model> <command> /path/to/data/file [options]
 ```
 
 Where `<model>` can be either `frames` (diffusion over SE3) or `coords` (diffusion over R3). 
-For `command`, users can select either `train` (train a model) or `generate` (generate from a model).
+For `<command>`, users can select either `train` (train a model) or `generate` (generate from a model).
 
-To generate structures for an epitope, you can use the `generate` command:
+To generate binding loop structures for an input epitope, you can use the `generate` command:
 
 ```
 loopgen frames generate /path/to/pdb/file --checkpoint /path/to/weights.ckpt --config config/best.yaml
 ```
 
-To ensure reasonable performance, we recommend generating a reduced PDB file containing only a subset of residues 
+To ensure reasonable performance, we recommend using a reduced PDB file containing only a subset of residues 
 to be targeted by the generated CDR loops. Note that the CDR will be generated with centre of mass at the 
 origin (0, 0, 0) of the coordinate system in the PDB file, so the epitope should be transformed so that it 
 is an appropriate distance and orientation to the CDR. We recommend placing the epitope centre of mass 10-12 
