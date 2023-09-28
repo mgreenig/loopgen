@@ -39,12 +39,46 @@ And finally activate the conda environment:
 conda activate loopgen
 ```
 
-And you are ready to go! 
+And you are ready to go!
+
+## Usage
+
+The basic structure of the command-line interface is as follows:
+
+```
+loopgen <model> <command> /path/to/hdf5/file [options]
+```
+
+Where `<model>` can be either `frames` (diffusion over SE3) or `coords` (diffusion over R3). 
+For `command`, users can select either `train` (train a model) or `generate` (generate from a model).
+
+To generate structures for an epitope, you can use the `generate` command:
+
+```
+loopgen frames generate /path/to/pdb/file --checkpoint /path/to/weights.ckpt --config config/best.yaml
+```
+
+To ensure reasonable performance, we recommend generating a reduced PDB file containing only a subset of residues 
+to be targeted by the generated CDR loops. Note that the CDR will be generated with centre of mass at the 
+origin (0, 0, 0) of the coordinate system in the PDB file, so the epitope should be transformed so that it 
+is an appropriate distance and orientation to the CDR. We recommend placing the epitope centre of mass 10-12 
+angstroms from the origin.
+
+You can access our datasets and trained weights [here](https://drive.google.com/drive/folders/1cxJV5MnMBTl8VjqkfIo4EsRCSDLHWh1B?usp=drive_link).
+
+To train a frame diffusion model, run:
+
+```
+loopgen frames train /path/to/hdf5/file --splits /path/to/json/file --config /path/to/yaml/file 
+```
+
+You can see all the relevant options for each command by running `loopgen <model> <command> --help`.
+
 
 
 ## Data
 
-This package relies on CDR/epitope structural information. We have found that 
+Training relies on CDR/epitope structural information. We have found that 
 these data types are best stored using `hdf5` format. The basic structure we choose 
 to use is as follows:
 
@@ -69,36 +103,3 @@ However our pipeline can handle any format so long as the key format
 from `receptor`/`ligand` and below is consistent. In our case, `receptor` refers to the 
 epitope and `ligand` refers to the CDR loop.
 
-If you have an `hdf5` file with this structure, you can read it in as follows:
-
-```
-from loopgen import ReceptorLigandDataset
-
-dataset = ReceptorLigandDataset.from_hdf5_file(<path/to/hdf5/file>)
-```
-
-
-## Usage
-
-The basic structure of the command-line interface is as follows:
-
-```
-loopgen <model> <command> /path/to/hdf5/file [options]
-```
-
-To generate structures for an epitope, you can use the `generate` command:
-
-```
-loopgen frames generate /path/to/pdb/file --checkpoint /path/to/weights.ckpt --
-```
-
-Where `<model>` can be either `frames` (diffusion over SE3) or `coords` (diffusion over R3). 
-For `command`, users can select either `train` (train a model) or `generate` (generate from a model),
-both of which use an HDF5 dataset (formatted as above) as input. For example, to train a frame
-diffusion model, run:
-
-```
-loopgen frames train /path/to/hdf5/file --splits /path/to/json/file --config /path/to/yaml/file 
-```
-
-You can see all the relevant options for each command by running `loopgen <model> <command> --help`.
