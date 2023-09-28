@@ -1,8 +1,10 @@
-# LoopGen: De novo design of peptide CDR binding loops with SE(3) diffusion models.
+# LoopGen: De novo design of antibody CDR loops with SE(3) diffusion models
 
 LoopGen is a python package providing functionality for diffusion models for CDR binding loop design. 
 Our model performs diffusion over the space of residue orientations and positions, generating 
-diverse loop conformations that fit the geometry of the target epitope.
+diverse loop conformations that fit the geometry of the target epitope. Currently, the model does
+not generate sequences for the CDR loops - only backbone conformations. We hope to extend our model 
+to generate sequences in the future.
 
 ![figure](figures/3ulu_ensemble.png)
 
@@ -62,19 +64,17 @@ To ensure reasonable performance, we recommend using a reduced PDB file containi
 to be targeted by the generated CDR loops. Note that the CDR will be generated with centre of mass at the 
 origin (0, 0, 0) of the coordinate system in the PDB file, so the epitope should be transformed so that it 
 is an appropriate distance and orientation to the CDR. We recommend placing the epitope centre of mass 10-12 
-angstroms from the origin.
+angstroms from the origin. Users can also input an HDF5 file (see below) for generation.
 
-You can access our datasets and trained weights [here](https://drive.google.com/drive/folders/1cxJV5MnMBTl8VjqkfIo4EsRCSDLHWh1B?usp=drive_link).
+You can access our datasets, training splits, and trained weights [here](https://drive.google.com/drive/folders/1cxJV5MnMBTl8VjqkfIo4EsRCSDLHWh1B?usp=drive_link).
 
 To train a frame diffusion model, run:
 
 ```
 loopgen frames train /path/to/hdf5/file --splits /path/to/json/file --config /path/to/yaml/file 
 ```
-
+ 
 You can see all the relevant options for each command by running `loopgen <model> <command> --help`.
-
-
 
 ## Data
 

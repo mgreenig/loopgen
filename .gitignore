@@ -13,6 +13,7 @@ data
 
 lightning_logs/
 mlruns/
+notebooks/
 
 slurm*
 *.out
