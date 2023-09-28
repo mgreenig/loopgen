@@ -49,6 +49,35 @@ class StructureDict(TypedDict):
     CB_coords: np.ndarray
 
 
+def structure_dict_to_structure(
+    frag_dict: StructureDict,
+    device: torch.device,
+    structure_class: Type[Structure] = Structure,
+) -> Union[Structure, LinearStructure]:
+    """
+    Creates a structure object (with the class `structure_class`) from a
+    StructureDict object.
+    """
+
+    return structure_class(
+        N_coords=torch.as_tensor(
+            frag_dict["N_coords"][:], dtype=torch.float32, device=device
+        ),
+        CA_coords=torch.as_tensor(
+            frag_dict["CA_coords"][:], dtype=torch.float32, device=device
+        ),
+        C_coords=torch.as_tensor(
+            frag_dict["C_coords"][:], dtype=torch.float32, device=device
+        ),
+        CB_coords=torch.as_tensor(
+            frag_dict["CB_coords"][:], dtype=torch.float32, device=device
+        ),
+        sequence=torch.as_tensor(
+            frag_dict["sequence"][:], dtype=torch.int64, device=device
+        ),
+    )
+
+
 class ReceptorLigandPair(TypedDict):
     """Type for a dictionary-like object containing a pair of examples with a name."""
 
@@ -126,24 +155,6 @@ class ReceptorLigandDataset(Dataset):
         """Checks whether a structure pair with the given name exists in the dataset."""
         return name in self._structure_pairs_by_name
 
-    def structure_dict_to_structure(
-        self, frag_dict: StructureDict, structure_class: Type[Structure] = Structure
-    ) -> Union[Structure, LinearStructure]:
-        """
-        Creates a structure object (with the class `structure_class`) from a
-        StructureDict object.
-        """
-
-        return structure_class(
-            N_coords=torch.as_tensor(frag_dict["N_coords"][:], device=self.device),
-            CA_coords=torch.as_tensor(frag_dict["CA_coords"][:], device=self.device),
-            C_coords=torch.as_tensor(frag_dict["C_coords"][:], device=self.device),
-            CB_coords=torch.as_tensor(frag_dict["CB_coords"][:], device=self.device),
-            sequence=torch.as_tensor(
-                frag_dict["sequence"][:], dtype=torch.int64, device=self.device
-            ),
-        )
-
     def pair_to_structures(
         self, frag_pair: ReceptorLigandPair
     ) -> Tuple[str, Structure, LinearStructure]:
@@ -156,13 +167,13 @@ class ReceptorLigandDataset(Dataset):
         name = frag_pair["name"]
 
         receptor_dict = frag_pair["receptor"]
-        receptor_structure = self.structure_dict_to_structure(
-            receptor_dict, self.receptor_structure_class
+        receptor_structure = structure_dict_to_structure(
+            receptor_dict, self.device, self.receptor_structure_class
         )
 
         ligand_dict = frag_pair["ligand"]
-        ligand_structure = self.structure_dict_to_structure(
-            ligand_dict, self.ligand_structure_class
+        ligand_structure = structure_dict_to_structure(
+            ligand_dict, self.device, self.ligand_structure_class
         )
 
         return name, receptor_structure, ligand_structure
@@ -406,3 +417,39 @@ def load_splits_file(
         "validation": validation_names,
     }
     return split_dict
+
+
+def load_generated_structures(
+    hdf5_filepath: str, device: torch.device("cpu")
+) -> List[Tuple[str, Structure, LinearStructure, Tuple[LinearStructure, ...]]]:
+    """
+    Loads generated structures from an HDF5 file. The HDF5 file should be the output
+    of a generation run (i.e. running loopgen <model> generate [args]),
+    and should contain the following keys stored under every structure pair
+    group:
+        - receptor
+        - ligand
+        - generated_<i> (for however many generated structures were generated)
+    """
+
+    file = h5py.File(hdf5_filepath)
+    all_structures = []
+    for group in hdf5_group_generator(
+        file, lambda g: "receptor" in g and "ligand" in g
+    ):
+        receptor = group["receptor"]
+        receptor_structure = structure_dict_to_structure(receptor, device)
+
+        ligand = group["ligand"]
+        ligand_structure = structure_dict_to_structure(ligand, device, LinearStructure)
+
+        generated = tuple(group[key] for key in group if key.startswith("generated_"))
+        generated_structures = tuple(
+            structure_dict_to_structure(g, device, LinearStructure) for g in generated
+        )
+
+        all_structures.append(
+            (group.name, receptor_structure, ligand_structure, generated_structures)
+        )
+
+    return all_structures

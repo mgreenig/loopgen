@@ -72,7 +72,7 @@ def logarithmic_beta_schedule(
     )
 
 
-def sigmoid_beta_schedule(
+def sigmoid_var_schedule(
     num_time_steps: int,
     min_var: float,
     max_var: float,
@@ -159,7 +159,7 @@ class BetaScheduleSelector:
                 self._num_time_steps, self._min_beta, self._max_beta
             )
         elif schedule_type == "sigmoid":
-            schedule = sigmoid_beta_schedule(
+            schedule = sigmoid_var_schedule(
                 self._num_time_steps, self._min_beta, self._max_beta
             )
         else:
@@ -183,17 +183,17 @@ class DiffusionForwardProcess(ABC):
     not the actual variances of any distribution. The variances are computed
     from the betas according to:
 
-        **Var[ p(x_t | x_t') ] = 1 - exp(-integral(beta, t, t'))**
+        **Var[x_t | x_t'] = 1 - exp(-integral(beta, t, t'))**
 
     Which is just the solution to the Fokker-planck equation.
     """
 
     def __init__(self, betas: torch.Tensor):
         self._betas = betas
-        # from the betas, get the stepwise variances i.e. Var[q(x_{t+1}| x_t)]
+        # from the betas, get the stepwise variances i.e. Var[x_{t+1}| x_t]
         self._stepwise_vars = betas_to_variances(betas, cumulative=False)
 
-        # from the betas, get the conditional variances i.e. Var[q(x_t| x_0)]
+        # from the betas, get the conditional variances i.e. Var[x_t| x_0]
         self._conditional_vars = betas_to_variances(betas)
 
     @abstractmethod
@@ -223,7 +223,7 @@ class IGSO3ForwardProcess(DiffusionForwardProcess):
         """
         :param betas: The beta values to use to calculate variances of the diffusion process.
             Beta is related to the variances by the following equation:
-            Var(q_t | q_t') = 1 - exp(-integral(beta, t', t)) -
+            Var[q_t | q_t'] = 1 - exp(-integral(beta, t', t)) -
             for any two times t' and t.
         :param support_n: The number of support points to use for the IGSO3 distributions.
         :param expansion_n: The number of terms to use in the approximation of the infinite
@@ -390,7 +390,6 @@ class Gaussian3DForwardProcess(DiffusionForwardProcess):
             cond_distr = Gaussian3DDistribution(
                 torch.zeros(3), self._conditional_vars[i].item()
             )
-            # print(i, self._conditional_vars[i], flush = True)
             self._conditional_distributions.append(cond_distr)
 
     def sample(
@@ -470,70 +469,6 @@ class Gaussian3DForwardProcess(DiffusionForwardProcess):
         return scores
 
 
-class SE3ForwardProcess:
-    """
-    Diffusion forward process for the group SE(3), i.e. the group of all affine
-    transformations (rotations/translations).
-
-    Uses the SO3ForwardProcess class to diffuse rotations towards the uniform IGSO(3)
-    distribution and the Gaussian3DForwardProcess class to diffuse translations
-    towards the standard normal.
-    """
-
-    def __init__(
-        self,
-        rotation_betas: torch.Tensor,
-        translation_betas: torch.Tensor,
-        igso3_support_n: int = 2000,
-        igso3_expansion_n: int = 2000,
-    ):
-        """
-        Initialises the class by creating the forward diffusion process classes
-        from variance schedules.
-        """
-
-        rotation_forward_process = IGSO3ForwardProcess(
-            rotation_betas,
-            support_n=igso3_support_n,
-            expansion_n=igso3_expansion_n,
-        )
-        translation_forward_process = Gaussian3DForwardProcess(translation_betas)
-
-        self._rotation_forward_process = rotation_forward_process
-        self._translation_forward_process = translation_forward_process
-
-    def sample(
-        self,
-        rotations: torch.Tensor,
-        translations: torch.Tensor,
-        time_step: int,
-        from_x0: bool = True,
-    ) -> Tuple[PairTensor, PairTensor, torch.Tensor]:
-        """
-        Generates samples and corresponding scores for the rotation and translation forward processes.
-        """
-        (
-            sampled_rotations,
-            sampled_rotation_scores,
-        ) = self._rotation_forward_process.sample(rotations, time_step, from_x0=from_x0)
-        (
-            sampled_translations,
-            sampled_translation_scores,
-            sampled_translation_noise,
-        ) = self._translation_forward_process.sample(
-            translations, time_step, from_x0=from_x0
-        )
-
-        return (
-            (sampled_rotations, sampled_translations),
-            (
-                sampled_rotation_scores,
-                sampled_translation_scores,
-            ),
-            sampled_translation_noise,
-        )
-
-
 class DiffusionReverseProcess(nn.Module, ABC):
     """
     Abstract class for the reverse process in a diffusion model,
@@ -554,8 +489,9 @@ class DiffusionReverseProcess(nn.Module, ABC):
         self.register_buffer(
             "_var_schedule", torch.zeros(beta_schedule.shape)
         )  # placeholder to be compatible with earlier checkpoint
-        self.register_buffer("_noise_scale", torch.as_tensor(noise_scale))
-        self._dt = torch.tensor(1.0 / len(beta_schedule))
+
+        self.noise_scale = noise_scale
+        self._dt = 1.0 / len(beta_schedule)
         self._standard_normal = Gaussian3DDistribution(
             self._standard_normal_mean, self._standard_normal_cov
         )
@@ -578,14 +514,14 @@ class SO3ReverseProcess(DiffusionReverseProcess):
     in De Bortoli et al. (2022) (https://arxiv.org/abs/2202.02763).
 
     **Note that the variance schedule passed to this class should be the conditional variances -
-    i.e. Var[p(x_t | x_0)] - rather than the stepwise variances - i.e. Var[p(x_t+1 | x_t)]**.
+    i.e. Var[x_t | x_0] - rather than the stepwise variances - i.e. Var[x_t+1 | x_t]**.
     """
 
     def __init__(
         self,
         beta_schedule: torch.Tensor,
         score_dim: int = 3,
-        noise_scale: float = 0.0,
+        noise_scale: float = 0.2,
     ):
         super().__init__(
             beta_schedule=beta_schedule, score_dim=score_dim, noise_scale=noise_scale
@@ -620,20 +556,19 @@ class SO3ReverseProcess(DiffusionReverseProcess):
         :returns: Batch of updated rotation matrices (R_t-1), of shape (..., 3, 3).
         """
 
-        standard_gaussian_sample = self._standard_normal.sample(
+        # get a random tangent element to the manifold at the identity rotation
+        tangent_gaussian = self._standard_normal.sample(
             score.shape[0], device=score.device
         )
-        # get a random tangent element to the manifold at the identity rotation
-        tangent_gaussian = standard_gaussian_sample
 
-        # Euler-Maruyama step in the identity's tangent space using the score and step size
+        # get diffusion coefficient
         g_t = self.get_diffusion_coef(time_step)
 
         # The 2 is not in FrameDiff, however, we found that this reverse step with the analytically computed noise
         # only correctly moved backwards when the 2 was applied. Empirically this led to higher quality samples.
         so3_update = (
             g_t**2 * score * self._dt * 2
-            + g_t * torch.sqrt(self._dt) * self._noise_scale * tangent_gaussian
+            + g_t * np.sqrt(self._dt) * self.noise_scale * tangent_gaussian
         )
 
         # convert the tangent element to an actual rotation matrix
@@ -657,7 +592,7 @@ class R3ReverseProcess(DiffusionReverseProcess):
         self,
         beta_schedule: torch.Tensor,
         score_dim: int = 3,
-        noise_scale: float = 0.0,
+        noise_scale: float = 0.2,
     ):
         super().__init__(
             beta_schedule=beta_schedule, score_dim=score_dim, noise_scale=noise_scale
@@ -666,9 +601,7 @@ class R3ReverseProcess(DiffusionReverseProcess):
         self._stepwise_var_schedule = betas_to_variances(
             beta_schedule, cumulative=False
         )
-        self._conditional_var_schedule = betas_to_variances(
-            beta_schedule, cumulative=True
-        )
+        self._conditional_var_schedule = betas_to_variances(beta_schedule)
 
     def forward(
         self,
@@ -701,7 +634,7 @@ class R3ReverseProcess(DiffusionReverseProcess):
         )
 
         noise = (
-            self._noise_scale * torch.sqrt(beta_t) * standard_gaussian_sample
+            self.noise_scale * torch.sqrt(beta_t) * standard_gaussian_sample
         )  # From Ho et al., assuming sigma(t)^2 = Beta(t)
 
         updated_translations = updated_coords + noise

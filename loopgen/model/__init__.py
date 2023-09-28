@@ -75,10 +75,9 @@ def load_trained_model(
 
 def setup_model(
     dataset: ReceptorLigandDataset,
-    splits: Dict[str, Set[str]],
+    splits: Optional[Dict[str, Set[str]]],
     param_dict: ParamDictionary,
     model_class: Union[Type[CDRCoordinateDiffusionModel], Type[CDRFrameDiffusionModel]],
-    accelerator: Literal["cpu", "gpu"],
     checkpoint_path: Optional[str] = None,
 ) -> Tuple[LightningDataModule, LightningModule]:
     """
@@ -87,11 +86,10 @@ def setup_model(
     generate a datamodule and model instance.
 
     :param dataset: The dataset to be used for training/evaluation.
-    :param splits: Dictionary containing the train/test/validation splits as string names
+    :param splits: Optional dictionary containing the train/test/validation splits as string names
         of the instances in the dataset, stored under the respective keys "train", "test", and "validation".
     :param param_dict: A dictionary of parameters for the model.
     :param model_class: The model class to be used.
-    :param accelerator: The accelerator (device) to be used.
     :param checkpoint_path: A path to a PyTorch checkpoint file containing model weights.
     :returns: A tuple of the datamodule and model instances.
     """
@@ -117,6 +115,7 @@ def setup_model(
                 checkpoint_path,
                 network=network,
                 **param_dict[model_class.__name__],
+                strict=False,
             )
 
     return datamodule, model

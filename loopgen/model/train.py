@@ -1,5 +1,5 @@
 """
-Contains a generic train() function that can be used across all model.
+Trains a LoopGen model.
 """
 
 from typing import Type, Literal, Optional, Dict, Set
@@ -119,33 +119,44 @@ def train(
         lg.info(f"Specified output directory {out_dir} does not exist, creating...")
         os.mkdir(out_dir)
 
+    num_train_samples = len(splits["train"])
+    num_test_samples = len(splits["test"])
+    num_validation_samples = len(splits["validation"])
+    total_num_samples = num_train_samples + num_test_samples + num_validation_samples
+
+    lg.info(
+        f"Received train/test/validation splits of "
+        f"{num_train_samples / total_num_samples:.2f}/"
+        f"{num_test_samples / total_num_samples:.2f}/"
+        f"{num_validation_samples / total_num_samples:.2f}"
+    )
+
     datamodule, model = setup_model(
-        dataset, param_dict, model_class, accelerator, checkpoint, splits
+        dataset, splits, param_dict, model_class, checkpoint
     )
 
     exp_name = settings.experiment_name + " test" if test else settings.experiment_name
     run_name = settings.run_name + " test" if test else settings.run_name
     mlflow_logger = get_mlflow_logger(exp_name, run_name, settings)
 
-    checkpoint_path = os.path.join(out_dir, f"{settings.checkpoint_outfile}.ckpt")
+    checkpoint_path = settings.checkpoint_outfile
 
     i = 1
     while os.path.exists(checkpoint_path):
-        checkpoint_path = os.path.join(
-            out_dir, f"{settings.checkpoint_outfile}-v{i}.ckpt"
-        )
+        checkpoint_path = f"{settings.checkpoint_outfile}-v{i}"
         i += 1
 
-    checkpoint_args = settings.distribute_params(ModelCheckpoint)["ModelCheckpoint"]
+    lightning_args = settings.distribute_params(pl.Trainer, ModelCheckpoint)
+    checkpoint_args = lightning_args["ModelCheckpoint"]
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=out_dir,
-        monitor=model.checkpoint_metric,
+        monitor=settings.checkpoint_metric,
         filename=checkpoint_path,
         **checkpoint_args,
     )
 
-    trainer_args = settings.distribute_params(pl.Trainer)["Trainer"]
+    trainer_args = lightning_args["Trainer"]
     trainer_args["fast_dev_run"] = test
 
     if "accelerator" not in trainer_args:
@@ -156,6 +167,8 @@ def train(
     trainer = pl.Trainer(
         logger=mlflow_logger,
         callbacks=[checkpoint_callback],
+        log_every_n_steps=settings.steps_per_log,
+        devices=1,
         **trainer_args,
     )
 
@@ -168,7 +181,6 @@ def train(
         lg.error(
             f"RuntimeError: {e} Saving model checkpoint at error to: {checkpoint_path}"
         )
-        trainer.save_checkpoint(checkpoint_path)
         sys.exit(1)
 
     model = model_class.load_from_checkpoint(
@@ -223,7 +235,7 @@ def train_from_args(
                     "Test status found in settings file. Command line will supercede settings.",
                 )
             else:
-                test = settings.test
+                test = settings.generate
 
         train(
             dataset,

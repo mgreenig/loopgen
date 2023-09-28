@@ -26,9 +26,9 @@ ParamDictionary = DefaultDict[str, Dict[str, Any]]
 
 # The output of the CDRFrameDataModule collate() (used for training), consisting of:
 # 1. tuple of IDs, one associated with each CDR in the batch
-# 2. optional epitope structure
+# 2. epitope structure
 # 3. ground truth CDR orientation frames
-CDRFramesBatch = Tuple[Tuple[str], Optional[Structure], OrientationFrames]
+CDRFramesBatch = Tuple[Tuple[str], Structure, OrientationFrames]
 
 Score = Union[torch.Tensor, Sequence[torch.Tensor]]
 
@@ -41,4 +41,3 @@ ForwardProcessOutput = Tuple[
     VectorFeatureGraph,
     Optional[VectorFeatureGraph],
 ]
-

@@ -1,12 +1,11 @@
 """
-Structure classes for storing sequences and atomic coordinates (N, CA, C, and CB),
-and doing calculations with those coordinates.
+Structure classes for storing sequences and atomic coordinates (N, CA, C, and CB).
 """
 
 from __future__ import annotations
 
 from typing import Union, Sequence, Optional, Any, Iterable, Dict, Tuple, List
-
+from pathlib import Path
 from enum import Enum
 
 import torch
@@ -14,6 +13,10 @@ import h5py
 import numpy as np
 
 from Bio.PDB.Polypeptide import protein_letters_3to1
+from Bio.PDB.PDBIO import PDBIO
+from Bio.PDB.Structure import Structure as BioPDBStructure
+from Bio.PDB.Model import Model
+from Bio.PDB.Chain import Chain
 from Bio.PDB.Residue import Residue
 from Bio.PDB.Atom import Atom
 
@@ -23,7 +26,8 @@ from torch_scatter import scatter_mean
 from e3nn.o3 import axis_angle_to_matrix
 
 from .utils import (
-    get_orientation_angles,
+    get_unit_normals,
+    get_covalent_bonds,
     get_dihedral_angles,
     combine_coords,
     standardise_batch_and_ptr,
@@ -84,6 +88,7 @@ class BondLengths(Enum):
     N_CA = 1.459
     CA_C = 1.525
     C_N = 1.336
+    C_O = 1.229
 
 
 class BondLengthStdDevs(Enum):
@@ -633,6 +638,65 @@ def impute_CB_coords(
     return CB_coords
 
 
+def impute_O_coords(
+    N: torch.Tensor,
+    CA: torch.Tensor,
+    C: torch.Tensor,
+    ptr: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    Imputes carboxyl O coordinates using the negative bisector of the CA-C and C-N bonds
+    (if the C atom is covalently bonded to an included N atom) or a rotation of the last residue's
+    CA-C bond (if the C atom is not covalently bonded to an included N atom).
+
+    :param N: Tensor of shape (N, 3) containing N coordinates.
+    :param CA: Tensor of shape (N, 3) containing CA coordinates.
+    :param C: Tensor of shape (N, 3) containing C coordinates.
+    :param ptr: Batch pointer vector of length equal to the number of batches plus 1.
+    :returns: Tensor of shape (N, 3) containing O coordinates.
+    """
+    if not N.shape == CA.shape == C.shape:
+        raise ValueError(
+            "N, CA, and C tensors must have the same shape, got {} {} {}".format(
+                N.shape, CA.shape, C.shape
+            )
+        )
+
+    if ptr is None:
+        ptr = torch.as_tensor([0, len(N)], device=N.device)
+
+    N_expanded, pad_mask = expand_batch_tensor(
+        N, torch.diff(ptr), return_padding_mask=True
+    )
+
+    # Bonds for covalently bonded C atoms are the negative bisector of the CA-C and C-N bonds
+    N_shifted = torch.roll(N_expanded, -1, dims=1)[~pad_mask]
+    CA_C_bonds = CA - C
+    N_C_bonds = N_shifted - C
+    bond_bisectors = torch.nn.functional.normalize(CA_C_bonds + N_C_bonds, dim=-1)
+    O_bonds = -bond_bisectors * BondLengths["C_O"].value
+
+    # For the C terminus of the structure we just assume O lies in the same plane as the N-CA-C atoms
+    c_terminus_indices = ptr[1:] - 1
+    last_residue_CA_C_bonds = CA_C_bonds[c_terminus_indices]
+    last_residue_CA_N_bonds = (N - CA)[c_terminus_indices]
+
+    rot_axis = get_unit_normals(last_residue_CA_C_bonds, last_residue_CA_N_bonds)
+    rot_matrix = axis_angle_to_matrix(
+        rot_axis, torch.as_tensor(np.pi / 3, device=rot_axis.device)
+    )
+
+    last_O_C_bonds = (
+        torch.nn.functional.normalize(
+            einsum(rot_matrix, -last_residue_CA_C_bonds, "... i j, ... j -> ... i")
+        )
+        * BondLengths["C_O"].value
+    )
+    O_bonds[c_terminus_indices] = last_O_C_bonds
+
+    return C + O_bonds
+
+
 class Structure:
 
     """
@@ -728,6 +792,120 @@ class Structure:
         h5py_group.create_dataset("C_coords", data=self.C_coords.cpu().numpy())
         h5py_group.create_dataset("N_coords", data=self.N_coords.cpu().numpy())
         h5py_group.create_dataset("CB_coords", data=self.CB_coords.cpu().numpy())
+
+    def write_to_pdb(
+        self,
+        filepath: str,
+        pdb_id: Optional[str] = None,
+        residue_chains: Optional[Union[str, Sequence[str]]] = None,
+        residue_numbers: Optional[Sequence[int]] = None,
+    ) -> None:
+        """
+        Writes structure information (coordinates + sequence) to a PDB file.
+        Users can provide chain and residue number information to be written to the PDB file;
+        if these are None, the chain is set to A and the residue numbers are set to integers
+        starting from 1. If this is called on a batched structure, the different structures will
+        be saved as different models in the PDB file.
+
+        :param filepath: Path to the PDB file to be written.
+        :param pdb_id: Optional PDB ID for the structure. If this is not present, the stem
+            of the filepath is used.
+        :param residue_chains: Optional chain information to be written to the PDB file. This can
+            either be a single string (which assumes all residues are on that chain)
+            or a sequence of strings, the same length as the number of residues.
+        :param residue_numbers: Optional residue number information to be written to the PDB file.
+            This should be a sequence of strings, the same length as the number of residues.
+        """
+
+        if self.missing_atoms:
+            raise ValueError("Cannot write PDB file for structure with missing atoms.")
+
+        if pdb_id is None:
+            pdb_id = Path(filepath).stem
+
+        if residue_chains is None:
+            residue_chains = ["A"] * len(self)
+        elif isinstance(residue_chains, str):
+            residue_chains = [residue_chains] * len(self)
+
+        unique_chains = set(residue_chains)
+
+        if not self.has_batch:
+            ptr = torch.as_tensor([0, len(self)], device=self.N_coords.device)
+        else:
+            ptr = self.ptr
+
+        if residue_numbers is None:
+            residue_numbers = []
+            for model in range(len(ptr) - 1):
+                start = ptr[model]
+                end = ptr[model + 1]
+                chain_residue_counters = {chain: 1 for chain in unique_chains}
+                for chain in residue_chains[start:end]:
+                    res_num = chain_residue_counters[chain]
+                    residue_numbers.append(res_num)
+                    chain_residue_counters[chain] += 1
+
+        if len(residue_chains) != len(self) or len(residue_numbers) != len(self):
+            raise ValueError(
+                "Chains and residue numbers must be the same length as the number of residues."
+            )
+
+        aa3_index_to_name = {v.value: k for k, v in AminoAcid3.__members__.items()}
+        structure = BioPDBStructure(pdb_id)
+        O_coords = impute_O_coords(
+            self.N_coords, self.CA_coords, self.C_coords, self.ptr
+        )
+        for i, (start, end) in enumerate(zip(ptr[:-1], ptr[1:])):
+            model = Model(i)
+            model_chains = {
+                chain_id: Chain(chain_id) for chain_id in sorted(unique_chains)
+            }
+            for j in range(start, end):
+                chain = residue_chains[j]
+                res_num = residue_numbers[j]
+                res_chain = model_chains[chain]
+                res = Residue(
+                    (" ", res_num, " "),
+                    aa3_index_to_name[self.sequence[j].item()],
+                    "",
+                )
+
+                res_N = Atom(
+                    "N", self.N_coords[j].cpu().numpy(), 0.0, 1.0, " ", "N", 0, "N"
+                )
+                res_CA = Atom(
+                    "CA", self.CA_coords[j].cpu().numpy(), 0.0, 1.0, " ", "CA", 0, "C"
+                )
+                res_C = Atom(
+                    "C", self.C_coords[j].cpu().numpy(), 0.0, 1.0, " ", "C", 0, "C"
+                )
+
+                res.add(res_N)
+                res.add(res_CA)
+                res.add(res_C)
+
+                # add O atom if the structure is a linear chain
+                if isinstance(self, LinearStructure):
+                    res_O = Atom(
+                        "O", O_coords[j].cpu().numpy(), 0.0, 1.0, " ", "O", 0, "O"
+                    )
+                    res.add(res_O)
+
+                res_CB = Atom(
+                    "CB", self.CB_coords[j].cpu().numpy(), 0.0, 1.0, " ", "CB", 0, "C"
+                )
+                res.add(res_CB)
+                res_chain.add(res)
+
+            for chain in model_chains.values():
+                model.add(chain)
+
+            structure.add(model)
+
+        io = PDBIO()
+        io.set_structure(structure)
+        io.save(filepath)
 
     @classmethod
     def from_pdb_residues(
@@ -1334,6 +1512,27 @@ class Structure:
             sequence=sequence_repeated,
             batch=new_batch,
             ptr=new_ptr,
+        )
+
+    @classmethod
+    def from_frames(cls, frames: OrientationFrames):
+        """
+        Creates a structure from an OrientationFrames object, imputing CB coordinates using
+        tetrahedral geometry around the CA atom and setting the sequence to all zeros (alanines).
+        """
+        N_coords, CA_coords, C_coords = frames.to_backbone_coords()
+        CB_coords = impute_CB_coords(N_coords, CA_coords, C_coords)
+        sequence = torch.zeros(
+            (len(CA_coords)), dtype=torch.long, device=CA_coords.device
+        )
+        return cls(
+            N_coords,
+            CA_coords,
+            C_coords,
+            CB_coords,
+            sequence=sequence,
+            batch=frames.batch,
+            ptr=frames.ptr,
         )
 
 

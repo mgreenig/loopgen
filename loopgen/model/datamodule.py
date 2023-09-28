@@ -198,10 +198,6 @@ class CDRDiffusionDataModule(LightningDataModule, ABC):
         self,
         dataset: Optional[ReceptorLigandDataset] = None,
         splits: Optional[Dict[str, Set[str]]] = None,
-        fix_cdr_centre: bool = True,
-        fixed_cdr_coord: Sequence[float] = (0.0, 0.0, 0.0),
-        fix_epitope_centre: bool = False,
-        fixed_epitope_coord: Sequence[float] = (0.0, 0.0, 0.0),
         self_conditioning_rate: float = 0.5,
         pad_feature_value: float = 0.0,
         time_step_encoding_channels: int = 5,
@@ -215,16 +211,6 @@ class CDRDiffusionDataModule(LightningDataModule, ABC):
             when indexed. If this is None, the datamodule throws an error when setup() is called.
         :param splits: Optional dictionary mapping keys ("train", "validation", "test") to sequences of
             antigen/CDR complex names. If this is None, the datamodule throws an error when setup() is called.
-        :param fix_cdr_centre: Whether to apply a translation to move every complex so that the CDR
-            centre of massed is placed at a fixed coordinate. This must be mutually exclusive with
-            fix_epitope_centre.
-        :param fixed_cdr_coord: The coordinate at which the CDR centre of mass is fixed to. Only applies
-            if fix_cdr_centre is True.
-        :param fix_epitope_centre: Whether to apply a translation to move every complex so that the epitope
-            centre of mass is placed at a fixed coordinate. This must be mutually exclusive with
-            fix_cdr_centre.
-        :param fixed_epitope_coord: The coordinate at which the epitope centre of mass is fixed to. Only applies
-            if fix_epitope_centre is True.
         :param self_conditioning_rate: The rate at which samples for training "self-conditioning"
             will be used. This is the rate at which the model will make a prediction
             on samples drawn from q(x_{t+1} | x_t) and use that information
@@ -241,30 +227,9 @@ class CDRDiffusionDataModule(LightningDataModule, ABC):
         :param positional_encoding_channels: Number of channels to use for the sinusoidal positional
             encoding for CDR residues, which is concatenated onto the node features for the CDR only.
         :param batch_size: Number of antigen/CDR complexes per batch.
-        :param train_test_val_splits: 3-tuple of floats denoting
-            relative proportions of samples allocated
-            to the train, test, and validation sets (in that order).
-        :param exclude_antigen: Whether to exclude the antigen structure from
-            the loaded graphs.
-        :param split_by_pdb: Whether to split the dataset by PDB ID,
-            so that no structures with the same PDB ID
-            are found across train/test/validation sets.
-            Useful when multiple CDRs are taken from single
-            PDB structures.
-        :param cdr_type_dict: Optional dictionary mapping CDR IDs
-            (some function of the antigen/CDR complex name)
-            to CDR types (an arbitrary label) - only used to
-            look-up the sampling weight of each antigen/CDR complex
-            if `cdr_type_weights` is provided, specifying the weight of each CDR type.
-        :param cdr_type_weights: Optional dictionary mapping CDR types (arbitrary labels)
-            to sampling weights to be used by the dataloader.
-        :param name_to_id_fn: Function called on each antigen/CDR complex
-            name to generate the complex's ID. By default, splits on the
-            character '/' and takes the last element.
-        :param name_to_pdb_id_fn: Function called on each antigen/CDR complex
-            name to obtain the complex's PDB ID. By default, splits on the character
-            '/' and takes the second element.
         """
+
+        super().__init__()
 
         self._dataset = dataset
         self._splits = splits
@@ -280,19 +245,6 @@ class CDRDiffusionDataModule(LightningDataModule, ABC):
         else:
             self._device = torch.device("cpu")
 
-        self._fix_cdr_centre = fix_cdr_centre
-        self._fixed_cdr_coord = torch.as_tensor(fixed_cdr_coord, device=self._device)
-
-        self._fix_epitope_centre = fix_epitope_centre
-        self._fixed_epitope_coord = torch.as_tensor(
-            fixed_epitope_coord, device=self._device
-        )
-
-        if self._fix_cdr_centre and self._fix_epitope_centre:
-            raise ValueError(
-                "Only one of fix_cdr_centre and fix_epitope_centre can be True."
-            )
-
         self._using_self_conditioning = self_conditioning_rate > 0
 
         self._pad_feature_value = pad_feature_value
@@ -302,16 +254,21 @@ class CDRDiffusionDataModule(LightningDataModule, ABC):
 
     def setup(self, stage: str):
         """Performs the train/test/validation split according to the proportions passed to the constructor."""
-        if self._dataset is None or self._splits is None:
+        if self._dataset is None:
             raise ValueError(
                 "No dataset and/or splits dictionary provided to constructor, setup failed."
             )
 
-        self._train_dataset = self._dataset.subset_by_name(self._splits["train"])
-        self._validation_dataset = self._dataset.subset_by_name(
-            self._splits["validation"]
-        )
-        self._test_dataset = self._dataset.subset_by_name(self._splits["test"])
+        if self._splits is None:
+            self._train_dataset = self._dataset
+            self._validation_dataset = self._dataset
+            self._test_dataset = self._dataset
+        else:
+            self._train_dataset = self._dataset.subset_by_name(self._splits["train"])
+            self._validation_dataset = self._dataset.subset_by_name(
+                self._splits["validation"]
+            )
+            self._test_dataset = self._dataset.subset_by_name(self._splits["test"])
 
     @property
     def dataset(self) -> ReceptorLigandDataset:
@@ -332,6 +289,11 @@ class CDRDiffusionDataModule(LightningDataModule, ABC):
     def test_dataset(self) -> Optional[ReceptorLigandDataset]:
         """The test dataset."""
         return self._test_dataset
+
+    @property
+    def batch_size(self):
+        """The batch size."""
+        return self._batch_size
 
     def generate_example(self) -> ProteinGraph:
         """
@@ -386,6 +348,7 @@ class CDRDiffusionDataModule(LightningDataModule, ABC):
         """The train dataloader using the train dataset."""
         return torch.utils.data.DataLoader(
             self._train_dataset,
+            shuffle=True,
             collate_fn=self.collate,
             batch_size=self._batch_size,
         )
@@ -398,6 +361,7 @@ class CDRDiffusionDataModule(LightningDataModule, ABC):
         return torch.utils.data.DataLoader(
             self._validation_dataset,
             collate_fn=self.collate,
+            shuffle=False,
             batch_size=self._batch_size,
         )
 
@@ -410,36 +374,12 @@ class CDRDiffusionDataModule(LightningDataModule, ABC):
         return torch.utils.data.DataLoader(
             self._test_dataset,
             collate_fn=self.collate,
+            shuffle=False,
             batch_size=self._batch_size,
         )
 
-    def fix_complex_by_epitope(
-        self,
-        epitope: Structure,
-        cdr: Union[OrientationFrames, LinearStructure],
-    ) -> Tuple[Structure, Union[OrientationFrames, LinearStructure]]:
-        """
-        Translates the coordinates of the CDR and epitope structures so the epitope
-        structure is centered at the coordinate specified by `fixed_epitope_coord`. Returns two new objects
-        (one epitope Structure and one CDR LinearStructure or OrientationFrames) with translated coordinates.
-        """
-        centered_epitope, epitope_centre_of_mass = epitope.center()
-        fixed_epitope = centered_epitope.translate(self._fixed_epitope_coord)
-
-        if not cdr.has_batch:
-            cdr_batch = torch.zeros(
-                len(cdr), device=epitope_centre_of_mass.device, dtype=torch.int64
-            )
-        else:
-            cdr_batch = cdr.batch
-
-        translations = epitope_centre_of_mass - self._fixed_epitope_coord
-        fixed_cdr = cdr.translate(-translations[cdr_batch])
-
-        return fixed_epitope, fixed_cdr
-
+    @staticmethod
     def fix_complex_by_cdr(
-        self,
         epitope: Structure,
         cdr: OrientationFrames,
     ) -> Tuple[Structure, Union[OrientationFrames, LinearStructure]]:
@@ -450,8 +390,14 @@ class CDRDiffusionDataModule(LightningDataModule, ABC):
         """
         fixed_cdr, cdr_centroids = cdr.center()
 
-        translations = cdr_centroids - self._fixed_cdr_coord
-        fixed_epitope = epitope.translate(-translations[epitope.batch])
+        if not epitope.has_batch:
+            epitope_batch = torch.zeros(
+                len(epitope), device=cdr_centroids.device, dtype=torch.int64
+            )
+        else:
+            epitope_batch = epitope.batch
+
+        fixed_epitope = epitope.translate(-cdr_centroids[epitope_batch])
 
         return fixed_epitope, fixed_cdr
 
@@ -474,10 +420,7 @@ class CDRDiffusionDataModule(LightningDataModule, ABC):
         epitope = Structure.combine(epitopes)
         cdr_frames = OrientationFrames.combine([cdr.orientation_frames for cdr in cdrs])
 
-        if self._fix_cdr_centre:
-            epitope, cdr_frames = self.fix_complex_by_cdr(epitope, cdr_frames)
-        elif self._fix_epitope_centre:
-            epitope, cdr_frames = self.fix_complex_by_epitope(epitope, cdr_frames)
+        epitope, cdr_frames = self.fix_complex_by_cdr(epitope, cdr_frames)
 
         return names, epitope, cdr_frames
 

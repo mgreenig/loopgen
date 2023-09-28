@@ -1,12 +1,10 @@
 # Experiment Parameters
 experiment_name: "Loopgen training"
-steps_per_log: 50
-train_test_val_splits: [0.85, 0.10, 0.05]
+steps_per_log: 5
 run_name: "position_ablation"
-checkpoint_outfile: "best_weights"
 checkpoint_metric: "validation_loss"
 batch_size: 128
-max_epochs: 500
+max_epochs: 250
 
 # Model Parameters
 learning_rate: 0.0001 # only needed if training
@@ -19,6 +17,7 @@ min_trans_beta: 0.0001
 max_trans_beta: 20
 weight_loss_by_norm: True
 use_cdr_positional_encoding: False
+use_igso3_cache: False
 
 # DataModule Parameters
 fix_cdr_centre: True

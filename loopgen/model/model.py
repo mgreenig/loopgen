@@ -76,9 +76,6 @@ class CDRCoordinateDiffusionModel(LightningModule):
         min_trans_beta: float = 1e-4,
         max_trans_beta: float = 20,
         weight_loss_by_norm: bool = True,
-        fix_cdr_centre: bool = True,
-        fixed_cdr_coord: Sequence[float] = (0.0, 0.0, 0.0),
-        n_score_samples: int = 50000,
         pad_feature_value: float = 0.0,
         time_step_encoding_channels: int = 5,
         use_cdr_positional_encoding: bool = True,
@@ -98,13 +95,6 @@ class CDRCoordinateDiffusionModel(LightningModule):
         :param max_trans_beta: Maximum variance of the translation diffusion process.
         :param weight_loss_by_norm: Whether to weight the loss by the norm of the predicted
             rotation and translation scores.
-        :param fix_cdr_centre: Whether to apply a translation to move every complex so that the CDR
-            centre of massed is placed at a fixed coordinate. This must be mutually exclusive with
-            fix_epitope_centre.
-        :param fixed_cdr_coord: The coordinate at which the CDR centre of mass is fixed to. Only applies
-            if fix_cdr_centre is True.
-        :param n_score_samples: Number of samples to use to estimate the mean norm of the score
-            at each step of the forward process.
         :param pad_feature_value: The feature value for added pad features (if self-conditioning
             is used).
         :param time_step_encoding_channels: Number of channels to use for the sinusoidal time step
@@ -118,6 +108,9 @@ class CDRCoordinateDiffusionModel(LightningModule):
         :param test_results_filepath: Filepath under which test results will be saved.
         """
         super().__init__()
+
+        self.save_hyperparameters(ignore=["network"])
+
         self._network = network
         self._learning_rate = learning_rate
 
@@ -150,8 +143,6 @@ class CDRCoordinateDiffusionModel(LightningModule):
         self._add_pad_cdr_features = False
         self._pad_feature_value = pad_feature_value
 
-        self._fix_cdr_center = fix_cdr_centre
-
         self._translation_stationary_dist = Gaussian3DDistribution(
             mean=torch.zeros(3, device=self._device)
         )
@@ -172,9 +163,6 @@ class CDRCoordinateDiffusionModel(LightningModule):
         self._use_cdr_positional_encoding = bool(use_cdr_positional_encoding)
         self._positional_encoding_channels = positional_encoding_channels
 
-        ### Leaving these here for now to be compatible with a saved checkpoint,
-        # but note that they are **NO LONGER USED** in generate. model.generate() now
-        # initialized them so that the noise scale can be changed more easily at test time.
         self._translation_reverse_process = R3ReverseProcess(self._trans_beta_schedule)
 
         if self._num_time_steps <= 0:
@@ -209,8 +197,6 @@ class CDRCoordinateDiffusionModel(LightningModule):
         Creates a VectorFeatureComplexGraph from the given CDR frames and epitope structure and
         sets the CDR vector features to a single vector of 0s, so as to remove any conformational
         information outside of the CDR CA coordinates.
-
-        In this case. datamodule_class.create_graph returns a graph that ignores the rotational information
         """
         graph = self.datamodule_class.create_graph(
             cdr_frames,
@@ -249,7 +235,7 @@ class CDRCoordinateDiffusionModel(LightningModule):
 
         Although the rotations are passed forward (to be compatible with larger library), they
         are ignored in the create_graph() function, so this model is in fact ablating the rotational information.
-        See create_coord_graph in model/abdiff/datamodule for details.
+        See create_coord_graph() in models/abdiff/datamodule for details.
         """
         noised_coords, score = self._translation_forward_process.sample(
             cdr_frames.translations, time_step.item()
@@ -339,14 +325,23 @@ class CDRCoordinateDiffusionModel(LightningModule):
 
         return graph
 
-    def calculate_loss(self, batch: CDRFramesBatch) -> torch.Tensor:
+    def self_condition(self, graph: ProteinGraph, scores: torch.Tensor):
+        """
+        Adds self-conditioning information to the graph by adding translation scores
+        to the node features.
+        """
+        graph = self.self_condition_translations(graph, scores)
+        return graph
+
+    def calculate_loss(
+        self, batch: CDRFramesBatch, time_step: torch.Tensor
+    ) -> torch.Tensor:
         """
         Runs a forward pass and calculates MSE loss for rotational and translational scores.
         The returned loss tensors contain the MSE loss for each individual score, stored
         within a rank 1 tensor.
         """
         names, epitope, cdr = batch
-        time_step = self.sample_time_step()
         (
             trans_scores,
             graph,
@@ -362,57 +357,53 @@ class CDRCoordinateDiffusionModel(LightningModule):
         trans_score_errors = self._loss_fn(pred_trans_scores, trans_scores)
         trans_score_mse = torch.mean(trans_score_errors, dim=-1)
 
-        self.log("time_step", time_step.item())
-
         return trans_score_mse
 
     def training_step(self, batch: CDRFramesBatch) -> torch.Tensor:
         """
-        Predicts 2 score vectors (rotation/translation) for each residue
+        Predicts the translation score for each residue
         in the batch and computes the loss between the predicted and
         ground truth scores.
         """
+        time_step = self.sample_time_step()
 
-        trans_score_mse = self.calculate_loss(batch)
+        trans_score_mse = self.calculate_loss(batch, time_step)
 
         mean_trans_loss = torch.mean(trans_score_mse)
 
         self.log("translation_train_loss", mean_trans_loss.item())
+        self.log("time_step", time_step.item())
 
         return mean_trans_loss
 
     def validation_step(self, batch: CDRFramesBatch, batch_idx: int) -> None:
         """
-        Calculates rotation and translation loss on the validation set,
-        storing them within a protected list of validation outputs.
-
-        TODO: Implement RMSD calculation here for de novo generated CDRs.
+        Calculates rotation and translation loss on the validation set for every time step,
+        storing them within a list of validation outputs.
         """
-        mse_losses = self.calculate_loss(batch)
 
-        self._val_outputs.append(mse_losses)
+        for time_step in self._time_steps:
+            self._val_outputs.append(self.calculate_loss(batch, time_step))
 
     def test_step(self, batch: CDRFramesBatch, batch_idx: int) -> None:
         """
-        Calculates rotation and translation loss on the test set,
+        Calculates rotation and translation loss on the test set for every time step,
         storing them within a protected list of test outputs.
-
-        TODO: Implement RMSD calculation here for de novo generated CDRs.
         """
-        mse_losses = self.calculate_loss(batch)
-
-        self._test_outputs.append(mse_losses)
+        for time_step in self._time_steps:
+            self._test_outputs.append(self.calculate_loss(batch, time_step))
 
     def on_validation_epoch_end(self) -> None:
         """
-        Calculates the mean rotational and translational losses
-        on the whole validation set.
+        Calculates the mean MSE on the whole validation set.
         """
         trans_score_mse = torch.cat(self._val_outputs)
 
         mean_trans_loss = torch.mean(trans_score_mse)
 
         self.log("validation_loss", mean_trans_loss.item())
+
+        self._val_outputs.clear()
 
     def on_test_epoch_end(self) -> None:
         """
@@ -425,87 +416,163 @@ class CDRCoordinateDiffusionModel(LightningModule):
 
         self.log("test_loss", mean_trans_loss.item())
 
-    def generate(
+        self._test_outputs.clear()
+
+    def _update_cdr(
         self,
-        batch: CDRFramesBatch,
-        noise_scale: torch.float32 = torch.tensor(0.0),
-        self_con: bool = True,
-        return_intermediates: bool = False,
-    ) -> Union[Tuple[Structure, torch.Tensor], List[Tuple[Structure, torch.Tensor]]]:
+        scores: torch.Tensor,
+        current_cdr: OrientationFrames,
+        time_step: torch.Tensor,
+        noise_scale: float,
+        self_cond: bool,
+    ) -> OrientationFrames:
         """
-        Initialises the CDR with random translations and
-        performs the reverse diffusion process to generate a CDR backbone conformation.
+        Updates the CDR backbone conformation by performing a reverse diffusion step,
+        returning the updated CDR OrientationFrames object.
         """
+        int_time_step = time_step.item()
 
-        old_noise_scale = self._translation_reverse_process._noise_scale.clone()
-        self._translation_reverse_process._noise_scale = noise_scale
+        cdr_positions = current_cdr.translations
 
-        names, epitope, cdr = batch
+        new_cdr_positions = self._translation_reverse_process(
+            cdr_positions,
+            scores,
+            int_time_step,
+        )
+
+        updated_cdr = OrientationFrames(
+            current_cdr.rotations,
+            new_cdr_positions,
+            batch=current_cdr.batch,
+            ptr=current_cdr.ptr,
+        )
+
+        return updated_cdr
+
+    def sample_stationary(
+        self,
+        size: int,
+        batch: Optional[torch.Tensor] = None,
+    ) -> OrientationFrames:
+        """
+        Draw an OrientationFrames object from the stationary distribution.
+        The rotations are initialised with the identity, and the translations
+        are sampled from a standard normal.
+
+        :param size: Number of frames to sample.
+        :param batch: Optional batch assignment tensor of shape (size,) for the sampled frames,
+            assigning each frame to a batch element. This can be used to generate a batch of
+            frames from the stationary distribution.
+        :returns: OrientationFrames object.
+        """
 
         random_translations = self._translation_stationary_dist.sample(
-            size=(len(cdr),), device=self._device
+            size=(size,), device=self._device
         )
 
         # Rotations are constant
         cdr_rotations = (
             torch.eye(3, device=random_translations.device)
             .unsqueeze(0)
-            .expand(len(cdr), -1, -1)
+            .expand(size, -1, -1)
         )
         random_cdr_frames = OrientationFrames(
             cdr_rotations,
             random_translations,
-            batch=cdr.batch,
-            ptr=cdr.ptr,
+            batch=batch,
         )
+
+        return random_cdr_frames
+
+    def generate(
+        self,
+        batch: CDRFramesBatch,
+        noise_scale: float = 0.2,
+        self_cond: bool = True,
+        return_intermediates: bool = False,
+        n: int = 1,
+    ) -> Union[
+        Tuple[Structure, List[OrientationFrames]],
+        Tuple[Structure, List[List[OrientationFrames]]],
+    ]:
+        """
+        Initialises the CDR with random translations and
+        performs the reverse diffusion process over CDR coordinates
+        to generate a CDR backbone conformation.
+
+        :param batch: 3-tuple containing the names of the CDRs in the batch,
+            the epitope structure, and the CDR orientation frames.
+        :param noise_scale: Noise scale for the reverse diffusion process.
+        :param self_cond: Whether to use self-conditioning information.
+        :param return_intermediates: Whether to return a list of intermediate CDRs.
+        :param n: Number of CDRs to generate for each epitope.
+        :returns: 2-tuple containing the epitope Structure and the n generated CDR OrientationFrames
+            objects. If return_intermediates is True, returns a list of 2-tuples containing the
+            epitope Structure and the generated CDR OrientationFrames objects at each time step.
+        """
+
+        old_noise_scale = self._translation_reverse_process.noise_scale
+        self._translation_reverse_process.noise_scale = noise_scale
+
+        names, epitope, cdr = batch
+        epitope_repeated = epitope.repeat(n)
+        cdr_repeated = cdr.repeat(n)
+
+        cdr_frames = self.sample_stationary(len(cdr_repeated), batch=cdr_repeated.batch)
+
         time_step = self._time_steps[-1] + 1
 
         graph = self.create_graph(
-            random_cdr_frames,
-            epitope,
+            cdr_frames,
+            epitope_repeated,
             time_step_encoding=self._time_step_encodings[time_step],
         )
 
         all_states = []
 
         for time_step in self._rev_time_steps:
-            pred_trans_scores = self(graph, time_step)
-            int_time_step = time_step.item()
-
-            cdr_positions = get_cdr_feature(graph, "pos")
-
-            new_cdr_positions = self._translation_reverse_process(
-                cdr_positions,
-                pred_trans_scores,
-                int_time_step,
+            scores = self(graph, time_step)
+            cdr_frames = self._update_cdr(
+                scores, cdr_frames, time_step, noise_scale, self_cond
             )
 
-            updated_cdr = OrientationFrames(
-                cdr_rotations, new_cdr_positions, batch=cdr.batch, ptr=cdr.ptr
-            )
-
-            if self._fix_cdr_center:
-                updated_cdr = updated_cdr.center(return_centre=False)
-
-            all_states.append((epitope, updated_cdr.translations))
+            cdr_frames = cdr_frames.center(return_centre=False)
 
             # make a new graph
             graph = self.create_graph(
-                updated_cdr,
-                epitope,
+                cdr_frames,
+                epitope_repeated,
                 time_step_encoding=self._time_step_encodings[time_step],
             )
 
             # add self-conditioning information only if passed to generate
-            if self_con:
-                graph = self.self_condition_translations(graph, pred_trans_scores)
+            if self_cond:
+                graph = self.self_condition(graph, scores)
 
-        self._translation_reverse_process._noise_scale = old_noise_scale
+            all_states.append(cdr_frames.split())
+
+        self._translation_reverse_process.noise_scale = old_noise_scale
+
+        # assemble the generated CDRs into individual OrientationFrames objects
+        if cdr.has_batch:
+            # if batched, created a batched OrientationFrames object for each round of generation performed
+            n_frames = len(cdr.ptr) - 1
+            all_generated_cdr_states = []
+            for state in all_states:
+                generated_cdrs = []
+                for i in range(0, n_frames * n, n_frames):
+                    start, end = i, i + n_frames
+                    cdr_gen_frames = state[start:end]
+                    gen_frames_batch = OrientationFrames.combine(cdr_gen_frames)
+                    generated_cdrs.append(gen_frames_batch)
+                all_generated_cdr_states.append(generated_cdrs)
+        else:
+            all_generated_cdr_states = all_states
 
         if return_intermediates:
-            return all_states
+            return epitope, all_generated_cdr_states
 
-        return epitope, updated_cdr.translations
+        return epitope, all_generated_cdr_states[-1]
 
 
 class CDRFrameDiffusionModel(CDRCoordinateDiffusionModel):
@@ -535,10 +602,9 @@ class CDRFrameDiffusionModel(CDRCoordinateDiffusionModel):
         min_trans_beta: float = 1e-4,
         max_trans_beta: float = 20,
         weight_loss_by_norm: bool = True,
-        fix_cdr_centre: bool = True,
-        fixed_cdr_coord: Sequence[float] = (0.0, 0.0, 0.0),
         igso3_support_n: int = 2000,
         igso3_expansion_n: int = 2000,
+        use_igso3_cache: bool = False,
         n_score_samples: int = 50000,
         pad_feature_value: float = 0.0,
         time_step_encoding_channels: int = 5,
@@ -562,15 +628,13 @@ class CDRFrameDiffusionModel(CDRCoordinateDiffusionModel):
         :param max_trans_beta: Maximum variance of the translation diffusion process.
         :param weight_loss_by_norm: Whether to weight the loss by the norm of the predicted
             rotation and translation scores.
-        :param fix_cdr_centre: Whether to apply a translation to move every complex so that the CDR
-            centre of massed is placed at a fixed coordinate. This must be mutually exclusive with
-            fix_epitope_centre.
-        :param fixed_cdr_coord: The coordinate at which the CDR centre of mass is fixed to. Only applies
-            if fix_cdr_centre is True.
         :param igso3_support_n: Number of points sampled to approximate the
             support of the IGSO(3) distribution.
         :param igso3_expansion_n: Number of terms used to truncate the
             infinite sum in the IGSO(3) PDF.
+        :param use_igso3_cache: Whether to load IGSO(3) PDF values from the cache (or save them
+            to the cache if they cannot be found). Defaults to False so that IGSO(3) values from multiple
+            runs with multiple variance schedules do not get mixed up.
         :param n_score_samples: Number of samples to use to estimate the mean norm of the score
             at each step of the forward process.
         :param pad_feature_value: The feature value for added pad features (if self-conditioning
@@ -594,9 +658,6 @@ class CDRFrameDiffusionModel(CDRCoordinateDiffusionModel):
             min_trans_beta,
             max_trans_beta,
             weight_loss_by_norm,
-            fix_cdr_centre,
-            fixed_cdr_coord,
-            n_score_samples,
             pad_feature_value,
             time_step_encoding_channels,
             use_cdr_positional_encoding,
@@ -621,6 +682,7 @@ class CDRFrameDiffusionModel(CDRCoordinateDiffusionModel):
             self._rot_beta_schedule,
             self._igso3_support_n,
             self._igso3_expansion_n,
+            use_cache=use_igso3_cache,
         )
 
         if self._using_self_conditioning:
@@ -763,14 +825,91 @@ class CDRFrameDiffusionModel(CDRCoordinateDiffusionModel):
 
         return graph
 
-    def calculate_loss(self, batch: CDRFramesBatch) -> PairTensor:
+    def self_condition(
+        self, graph: ProteinGraph, scores: Tuple[torch.Tensor, torch.Tensor]
+    ):
+        """Adds self-conditioning information to the graph."""
+        rot_scores, trans_scores = scores
+        graph = self.self_condition_translations(graph, trans_scores)
+        graph = self.self_condition_rotations(graph, rot_scores)
+        return graph
+
+    def sample_stationary(
+        self,
+        size: int,
+        batch: Optional[torch.Tensor] = None,
+    ) -> OrientationFrames:
+        """
+        Draw an OrientationFrames object from the stationary distribution.
+        The rotations are sampled from the uniform IGSO(3) distribution, and the translations
+        are sampled from a standard normal.
+
+        :param size: Number of frames to sample.
+        :param batch: Optional batch assignment tensor of shape (size,) for the sampled frames,
+            assigning each frame to a batch element. This can be used to generate a batch of
+            frames from the stationary distribution.
+        :returns: OrientationFrames object.
+        """
+
+        random_rotations = self._rotation_stationary_dist.sample(
+            size=(size,), device=self._device
+        )
+        random_translations = self._translation_stationary_dist.sample(
+            size=(size,), device=self._device
+        )
+        random_cdr_frames = OrientationFrames(
+            random_rotations,
+            random_translations,
+            batch=batch,
+        )
+
+        return random_cdr_frames
+
+    def _update_cdr(
+        self,
+        scores: Tuple[torch.Tensor, torch.Tensor],
+        current_cdr: OrientationFrames,
+        time_step: torch.Tensor,
+        noise_scale: float,
+        self_cond: bool,
+    ) -> OrientationFrames:
+        """
+        Updates the CDR backbone conformation by performing a reverse diffusion step,
+        returning the updated CDR OrientationFrames object.
+        """
+        rot_scores, trans_scores = scores
+        int_time_step = time_step.item()
+
+        new_cdr_positions = self._translation_reverse_process(
+            current_cdr.translations,
+            trans_scores,
+            int_time_step,
+        )
+
+        new_cdr_rotations = self._rotation_reverse_process(
+            current_cdr.rotations,
+            rot_scores,
+            int_time_step,
+        )
+
+        updated_cdr = OrientationFrames(
+            new_cdr_rotations,
+            new_cdr_positions,
+            batch=current_cdr.batch,
+            ptr=current_cdr.ptr,
+        )
+
+        return updated_cdr
+
+    def calculate_loss(
+        self, batch: CDRFramesBatch, time_step: torch.Tensor
+    ) -> PairTensor:
         """
         Runs a forward pass and calculates MSE loss for rotational and translational scores.
         The returned loss tensors contain the MSE loss for each individual score, stored
         within a rank 1 tensor.
         """
         names, epitope, cdr = batch
-        time_step = self.sample_time_step()
         (
             scores,
             graph,
@@ -780,9 +919,8 @@ class CDRFrameDiffusionModel(CDRCoordinateDiffusionModel):
         rot_scores, trans_scores = scores
 
         if self_cond_graph is not None:
-            pred_rot_scores, pred_trans_scores = self(self_cond_graph, time_step + 1)
-            graph = self.self_condition_translations(graph, pred_trans_scores)
-            graph = self.self_condition_rotations(graph, pred_rot_scores)
+            self_cond_scores = self(self_cond_graph, time_step + 1)
+            graph = self.self_condition(graph, self_cond_scores)
 
         # predict scores and get losses
         pred_rot_scores, pred_trans_scores = self(graph, time_step)
@@ -792,8 +930,6 @@ class CDRFrameDiffusionModel(CDRCoordinateDiffusionModel):
 
         rot_score_mse = torch.sum(rot_score_errors, dim=-1)
         trans_score_mse = torch.mean(trans_score_errors, dim=-1)
-
-        self.log("time_step", time_step.item())
 
         if self._weight_loss_by_norm:
             rot_score_mse /= self._mean_rot_score_norms[time_step.item()] ** 2
@@ -806,14 +942,16 @@ class CDRFrameDiffusionModel(CDRCoordinateDiffusionModel):
         in the batch and computes the loss between the predicted and
         ground truth scores.
         """
+        time_step = self.sample_time_step()
 
-        rot_score_mse, trans_score_mse = self.calculate_loss(batch)
+        rot_score_mse, trans_score_mse = self.calculate_loss(batch, time_step)
 
         mean_rot_loss = torch.mean(rot_score_mse)
         mean_trans_loss = torch.mean(trans_score_mse)
 
         self.log("rotation_train_loss", mean_rot_loss.item())
         self.log("translation_train_loss", mean_trans_loss.item())
+        self.log("time_step", float(time_step.item()))
 
         return mean_rot_loss + mean_trans_loss
 
@@ -830,6 +968,8 @@ class CDRFrameDiffusionModel(CDRCoordinateDiffusionModel):
         self.log("rotation_val_loss", mean_rot_loss.item())
         self.log("translation_val_loss", mean_trans_loss.item())
         self.log("validation_loss", (mean_rot_loss + mean_trans_loss).item())
+
+        self._val_outputs.clear()
 
     def on_test_epoch_end(self) -> None:
         """
@@ -848,90 +988,37 @@ class CDRFrameDiffusionModel(CDRCoordinateDiffusionModel):
     def generate(
         self,
         batch: CDRFramesBatch,
-        noise_scale: torch.float32 = torch.tensor(0.0),
-        self_con: bool = True,
+        noise_scale: float = 0.2,
+        self_cond: bool = True,
         return_intermediates: bool = False,
+        n: int = 1,
     ) -> Union[
-        Tuple[Structure, OrientationFrames], List[Tuple[Structure, OrientationFrames]]
+        Tuple[Structure, List[OrientationFrames]],
+        Tuple[Structure, List[List[OrientationFrames]]],
     ]:
         """
-        Initialises the CDR with random rotations/translations and
-        performs the reverse diffusion process to generate a CDR backbone conformation.
+        Initialises the CDR with random rotations and translations and
+        performs the reverse diffusion process over CDR frames (rotations and translations_
+        to generate a CDR backbone conformation.
+
+        :param batch: 3-tuple containing the names of the CDRs in the batch,
+            the epitope structure, and the CDR orientation frames.
+        :param noise_scale: Noise scale for the reverse diffusion process.
+        :param self_cond: Whether to use self-conditioning information.
+        :param return_intermediates: Whether to return a list of intermediate CDRs.
+            :param n: Number of CDRs to generate for each epitope.
+        :returns: 2-tuple containing the epitope Structure and the n generated CDR OrientationFrames
+            objects. If return_intermediates is True, returns a list of 2-tuples containing the
+            epitope Structure and the generated CDR OrientationFrames objects at each time step.
         """
 
-        old_rot_noise_scale = self._rotation_reverse_process._noise_scale.clone()
-        old_trans_noise_scale = self._translation_reverse_process._noise_scale.clone()
+        old_rot_noise_scale = self._rotation_reverse_process.noise_scale
+        self._rotation_reverse_process.noise_scale = noise_scale
 
-        self._rotation_reverse_process._noise_scale = noise_scale
-        self._translation_reverse_process._noise_scale = noise_scale
-
-        names, epitope, cdr = batch
-
-        random_rotations = self._rotation_stationary_dist.sample(
-            size=(len(cdr),), device=self._device
-        )
-        random_translations = self._translation_stationary_dist.sample(
-            size=(len(cdr),), device=self._device
-        )
-        random_cdr_frames = OrientationFrames(
-            random_rotations,
-            random_translations,
-            batch=cdr.batch,
-            ptr=cdr.ptr,
-        )
-        time_step = self._time_steps[-1] + 1
-
-        graph = self.create_graph(
-            random_cdr_frames,
-            epitope,
-            time_step_encoding=self._time_step_encodings[time_step],
+        output = super().generate(
+            batch, noise_scale, self_cond, return_intermediates, n
         )
 
-        all_states = []
+        self._rotation_reverse_process.noise_scale = old_rot_noise_scale
 
-        for time_step in self._rev_time_steps:
-            pred_rot_scores, pred_trans_scores = self(graph, time_step)
-            int_time_step = time_step.item()
-
-            cdr_orientations = get_cdr_feature(graph, "orientations")
-            cdr_positions = get_cdr_feature(graph, "pos")
-
-            new_cdr_rotations = self._rotation_reverse_process(
-                cdr_orientations,
-                pred_rot_scores,
-                int_time_step,
-            )
-            new_cdr_positions = self._translation_reverse_process(
-                cdr_positions,
-                pred_trans_scores,
-                int_time_step,
-            )
-
-            updated_cdr = OrientationFrames(
-                new_cdr_rotations, new_cdr_positions, batch=cdr.batch, ptr=cdr.ptr
-            )
-
-            if self._fix_cdr_center:
-                updated_cdr = updated_cdr.center(return_centre=False)
-
-            all_states.append((epitope, updated_cdr))
-
-            # make a new graph
-            graph = self.create_graph(
-                updated_cdr,
-                epitope,
-                time_step_encoding=self._time_step_encodings[time_step],
-            )
-
-            # add self-conditioning information only if passed to generate
-            if self_con:
-                graph = self.self_condition_translations(graph, pred_trans_scores)
-                graph = self.self_condition_rotations(graph, pred_rot_scores)
-
-        self._translation_reverse_process._noise_scale = old_trans_noise_scale
-        self._rotation_reverse_process._noise_scale = old_rot_noise_scale
-
-        if return_intermediates:
-            return all_states
-
-        return epitope, updated_cdr
+        return output

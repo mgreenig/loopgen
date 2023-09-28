@@ -3,60 +3,18 @@ Some useful utility functions, many of which are related
 to modifying or interacting with CDR graphs.
 """
 
-from typing import Optional, Tuple, Any, Union
+from typing import Optional, Tuple, Any, Union, List
 
 from functools import partial
 
 import torch
+import numpy as np
 from torch_geometric.data import HeteroData
-from torch_scatter import scatter_mean
 
 from .types import ProteinGraph
 from ..utils import node_type_subgraph
 from ..structure import Structure, OrientationFrames
 from ..graph import StructureData
-
-
-def center_complex_by_cdr(
-    epitope: Structure,
-    cdr_frames: OrientationFrames,
-) -> Tuple[Structure, OrientationFrames]:
-    """
-    Centers the whole complex so the CDR's center of mass is at the origin,
-    returning the translated epitope and CDR as a 2-tuple.
-    """
-    if not cdr_frames.has_batch:
-        cdr_batch = torch.zeros(
-            len(cdr_frames), device=cdr_frames.translations.device, dtype=torch.int64
-        )
-        cdr_ptr = torch.as_tensor(
-            [0, len(cdr_frames)],
-            device=cdr_frames.translations.device,
-            dtype=torch.int64,
-        )
-    else:
-        cdr_batch = cdr_frames.batch
-        cdr_ptr = cdr_frames.ptr
-
-    if not epitope.has_batch:
-        epitope_batch = torch.zeros(
-            len(epitope), device=epitope.CA_coords.device, dtype=torch.int64
-        )
-    else:
-        epitope_batch = epitope.batch
-
-    cdr_center_of_mass = scatter_mean(cdr_frames.translations, cdr_batch, dim=0)
-    centered_cdr_coords = cdr_frames.translations - cdr_center_of_mass[cdr_batch]
-
-    centered_cdr_frames = OrientationFrames(
-        cdr_frames.rotations,
-        centered_cdr_coords,
-        batch=cdr_batch,
-        ptr=cdr_ptr,
-    )
-    centered_epitope = epitope.translate(-cdr_center_of_mass[epitope_batch])
-
-    return centered_epitope, centered_cdr_frames
 
 
 def get_cdr_epitope_subgraphs(
@@ -311,3 +269,143 @@ def sinusoidal_encoding(value: torch.Tensor, channels: torch.Tensor, base: int =
         ),
     )
     return encoding
+
+
+def permute_epitopes(
+    structures: List[Tuple[str, Structure, Union[Structure, OrientationFrames]]],
+    align: bool = True,
+) -> List[Tuple[str, Structure, Union[Structure, OrientationFrames]]]:
+    """
+    For a given list of structure tuples of the form (names, epitope, cdr),
+    permutes the epitopes in the batch.
+
+    :param structures: A list of structure tuples of the form (names, epitope, cdr).
+    :param align: Whether to align the permuted epitope to the original epitope by aligning
+        their principal components.
+    :returns: List of the same form as the input list of structures, but with the epitopes permuted.
+    """
+    names, epitopes, cdrs = map(tuple, zip(*structures))
+    epitopes_permuted = [
+        epitopes[i].clone() for i in np.random.permutation(len(epitopes))
+    ]
+
+    if align is True:
+        cdrs_aligned = []
+        epitopes_permuted_aligned = []
+        for i in range(len(epitopes_permuted)):
+            epitope = epitopes[i]
+            cdr = cdrs[i]
+
+            epitope_centered, epitope_centre = epitope.center()
+            cdr_centered = cdr.translate(-epitope_centre)
+
+            permuted_receptor_aligned = epitopes_permuted[i].align_to_pcs(
+                epitope_centered
+            )
+
+            epitopes_permuted_aligned.append(permuted_receptor_aligned)
+            cdrs_aligned.append(cdr_centered)
+
+        epitopes_permuted = epitopes_permuted_aligned
+        cdrs = cdrs_aligned
+
+    structures_permuted = list(zip(names, epitopes_permuted, cdrs))
+
+    return structures_permuted
+
+
+def permute_cdrs(
+    structures: List[
+        Tuple[
+            str,
+            Union[Structure, OrientationFrames],
+            Union[Structure, OrientationFrames],
+        ]
+    ],
+    match_by_length: bool = True,
+) -> List[Tuple[str, Structure, Structure]]:
+    """
+    For a given list of structure tuples of the form (names, epitope, cdr),
+    permutes the CDRs in the batch.
+
+    :param structures: A list of structure tuples of the form (names, epitope, cdr).
+    :param match_by_length: Whether to match CDRs by length when permuting.
+    :param align: Whether to align the permuted CDR to the original CDR by aligning
+        their principal components.
+    :returns: List of the same form as the input list of structures, but with the epitopes permuted.
+    """
+    names, epitopes, cdrs = map(tuple, zip(*structures))
+
+    structures_permuted = []
+    if match_by_length:
+        individual_cdr_lengths = np.array([len(cdr) for cdr in cdrs])
+        cdr_lengths, cdr_len_counts = np.unique(
+            individual_cdr_lengths, return_counts=True
+        )
+        singleton_counts = set(cdr_len_counts[cdr_len_counts == 1])
+
+        index_mapping = {}
+        for cdr_len in cdr_lengths:
+            if cdr_len in singleton_counts:
+                continue
+            indices = np.nonzero(individual_cdr_lengths == cdr_len)[0]
+            perm_indices = indices[np.random.permutation(len(indices))]
+            index_mapping.update(dict(zip(indices, perm_indices)))
+
+        for i in range(len(structures)):
+            if i in index_mapping:
+                permuted_cdr = cdrs[index_mapping[i]]
+                structures_permuted.append((names[i], epitopes[i], permuted_cdr))
+
+    else:
+        structures_permuted = [
+            (name, ep, cdrs[i])
+            for i, (name, ep, _) in zip(
+                np.random.permutation(len(structures)), structures
+            )
+        ]
+
+    return structures_permuted
+
+
+def translate_cdrs_away(
+    structures: List[
+        Tuple[
+            str,
+            Union[Structure, OrientationFrames],
+            Union[Structure, OrientationFrames],
+        ]
+    ],
+    distance: float = 20.0,
+) -> List[
+    Tuple[str, Union[Structure, OrientationFrames], Union[Structure, OrientationFrames]]
+]:
+    """
+    For a given list of structure tuples of the form (names, epitope, cdr),
+    translates the CDRs away from the epitope centre of mass.
+
+    :param structures: A list of structure tuples of the form (names, epitope, cdr).
+    :param distance: The distance to translate the CDRs away from the epitope centre of mass.
+    :returns: List of the same form as the input list of structures, but with the CDRs translated
+        in the opposite direction from the epitope.
+    """
+
+    names, epitopes, cdrs = map(tuple, zip(*structures))
+    cdrs_translated = []
+
+    for i in range(len(cdrs)):
+        epitope = epitopes[i]
+        cdr = cdrs[i]
+
+        _, cdr_center = cdr.center()
+        _, epitope_center = epitope.center()
+        displacement = torch.nn.functional.normalize(
+            cdr_center - epitope_center, dim=-1
+        )
+
+        cdr_translated = cdr.translate(displacement * distance)
+        cdrs_translated.append(cdr_translated)
+
+    structures_translated = list(zip(names, epitopes, cdrs_translated))
+
+    return structures_translated

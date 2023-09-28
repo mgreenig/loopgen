@@ -1,14 +1,10 @@
 """ Random utility functions. """
 
-from typing import Tuple, Union, Optional, Dict, Literal, Sequence, Callable
+from typing import Tuple, Union, Optional, Literal, Callable
 
-from Bio import Align
-import pandas as pd
 import torch
 from torch_geometric.data import Data
-from torch_scatter import scatter_mean
 from e3nn.o3 import rand_matrix
-import numpy as np
 import logging as lg
 import sys
 
@@ -403,29 +399,6 @@ def get_angles(unit_v1s: torch.Tensor, unit_v2s: torch.Tensor) -> torch.Tensor:
     )
     angles = torch.acos(angle_inverses)
     return angles
-
-
-# calculates orientation angles between adjacent orientation vectors
-def get_orientation_angles(orientation_vectors: torch.Tensor) -> torch.Tensor:
-    """
-    Calculates angles between adjacent pairs of vectors in a tensor, where
-    adjacency is measured along the 2nd-to-last dimension.
-    Input vectors do not need to be normalised before passing to the function.
-
-    :param orientation_vectors: Tensor of vectors.
-    :return: Tensor of angles.
-    """
-
-    unit_orientation_vectors = torch.nn.functional.normalize(
-        orientation_vectors, dim=-1
-    )
-
-    orientation_angles = get_angles(
-        unit_orientation_vectors[..., 1:, :],
-        unit_orientation_vectors[..., :-1, :],
-    )
-
-    return orientation_angles
 
 
 # calculates dihedral angles for a list of coordinates
