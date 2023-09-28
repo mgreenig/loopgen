@@ -7,9 +7,9 @@ import warnings
 
 from functools import partial
 
-from .model import CDRCoordinateDiffusionModel, CDRFrameDiffusionModel
-from .model.train import add_train_args, train_from_args
-from .model.test import add_test_args, test_from_args
+from loopgen.model import CDRCoordinateDiffusionModel, CDRFrameDiffusionModel
+from loopgen.model.train import add_train_args, train_from_args
+from loopgen.model.generate import add_generate_args, generate_from_args
 
 
 USAGE = """
@@ -23,7 +23,8 @@ Currently, loopgen supports two models:
 
 Each model supports two commands:
     - train: Trains a new or saved model on a dataset in HDF5 format.
-    - evaluate: Evaluates a saved model on a dataset in HDF5 format.
+    - generate: Generates new structures using a saved model.
+    
 """
 
 
@@ -75,16 +76,16 @@ def main():
 
         train_parser.set_defaults(func=partial(train_from_args, model_class=model))
 
-        test_parser = subp.add_parser(
-            "test",
-            description=f"Test a model specified by a config YAML file.",
-            usage="test [options]",
+        gen_parser = subp.add_parser(
+            "generate",
+            description=f"Generate new structures using a trained model.",
+            usage="generate [options]",
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         )
 
-        add_test_args(test_parser)
+        add_generate_args(gen_parser)
 
-        test_parser.set_defaults(func=partial(test_from_args, model_class=model))
+        gen_parser.set_defaults(func=partial(generate_from_args, model_class=model))
 
     args = parser.parse_args()
     args.func(args)

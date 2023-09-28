@@ -1,3 +1,5 @@
+from typing import OrderedDict, Optional, Tuple, List
+
 import plotly.graph_objects as go
 import matplotlib
 import matplotlib.pyplot as plt
@@ -8,8 +10,6 @@ import torch
 import seaborn as sns
 
 from sklearn.metrics import confusion_matrix
-
-from typing import OrderedDict, Optional, Tuple
 
 from .structure import Structure, LinearStructure, AminoAcid3
 from .utils import combine_coords, get_covalent_bonds
@@ -351,3 +351,47 @@ def aa_conf_mat_heatmap(
     bar1_ax.set_xlabel(f"{xlab}\n", fontsize=20)
 
     return fig
+
+
+def ramachandran_plot(
+    structures: List[LinearStructure], ax: Optional[plt.Axes] = None, **kwargs
+):
+    """
+    Makes a ramachandran plot using a list of structures. If `ax` is not specified,
+    a new figure is created. Additional keyword arguments are passed to `plt.plot`.
+
+    :param structures: A list of structures to plot.
+    :param ax: The matplotlib axes on which to plot.
+    :param kwargs: Additional keyword arguments to pass to `plt.plot`.
+    :return: The matplotlib axes on which the plot was made.
+    """
+
+    phi_arr = []
+    omega_arr = []
+    psi_arr = []
+
+    for structure in structures:
+        angles = structure.get_backbone_dihedrals()
+        phi = angles[1:, 0]
+        omega = angles[:-1, 1]
+        psi = angles[:-1, 2]
+
+        phi_arr.extend(phi.numpy().tolist())
+        omega_arr.extend(omega.numpy().tolist())
+        psi_arr.extend(psi.numpy().tolist())
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, 8))
+
+    ax.plot(phi_arr, psi_arr, ".", **kwargs)
+
+    ax.set_xlim(-np.pi, np.pi)
+    ax.set_ylim(-np.pi, np.pi)
+
+    ax.set_aspect("equal")
+
+    ax.axhline(color="black", linewidth=0.8)  # Add horizontal axis
+    ax.axvline(color="black", linewidth=0.8)  # Add vertical axis
+
+    ax.grid(True, linestyle="--", alpha=0.2)  # Add grid lines
+    return ax

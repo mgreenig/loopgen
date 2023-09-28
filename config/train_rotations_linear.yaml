@@ -1,14 +1,14 @@
 # Experiment Parameters
 experiment_name: "Loopgen training"
-steps_per_log: 50
-run_name: "default"
+steps_per_log: 5
+run_name: "rotation_linear"
 checkpoint_metric: "validation_loss"
 batch_size: 128
 max_epochs: 250
 
 # Model Parameters
-learning_rate: 0.0001
-rotation_beta_schedule: "logarithmic"
+learning_rate: 0.0001 # only needed if training
+rotation_beta_schedule: "linear"
 translation_beta_schedule: "linear"
 num_time_steps: 100
 min_rot_beta: 0.1
@@ -24,4 +24,4 @@ self_conditioning_rate: 0.5
 add_pad_cdr_features: True
 
 # Output Paths
-out_dir: "./default"
+out_dir: "./rotation_linear"
