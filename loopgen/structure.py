@@ -1372,7 +1372,9 @@ class Structure:
         """
         Aligns the structure to a target structure by aligning
         the principal components. Returns a new Structure object with the aligned coordinates.
-        This assumes the target structure is centered at zero.
+        This assumes the target structure is centered at zero. Note that this sometimes
+        reverses orientation (since negative principal components are also valid solutions),
+        so it should not be used for RMSD calculations (see `sabdl.utils.get_rmsd()` instead).
 
         :param target: Target structure whose principal components the structure will be aligned to.
         :returns: Structure with aligned coordinates.
