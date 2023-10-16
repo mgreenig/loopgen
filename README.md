@@ -1,7 +1,8 @@
 # LoopGen: De novo design of antibody CDR loops with SE(3) diffusion models
 
 LoopGen is a python package providing functionality for diffusion models for CDR binding loop design. 
-Read more about our model in our [paper](https://arxiv.org/abs/2310.07051).
+Read more in our [paper](https://arxiv.org/abs/2310.07051).
+
 Our model performs diffusion over the space of residue orientations and positions, generating 
 diverse loop conformations that fit the geometry of the target epitope. Currently, the model does
 not generate sequences for the CDR loops - only backbone conformations. We hope to extend our model 
@@ -72,6 +73,8 @@ to run generation under different perturbations of the input epitope. We use the
 the dependence of generated structures on different features of the target protein. See 
 [the paper](https://arxiv.org/abs/2310.07051) for more details.
 
+## Training
+
 To train a frame diffusion model, run:
 
 ```
@@ -83,7 +86,16 @@ You can see all the relevant options for each command by running `loopgen <model
 You can access our datasets (including generated structures), training splits, 
 and trained weights [here](https://drive.google.com/drive/folders/1cxJV5MnMBTl8VjqkfIo4EsRCSDLHWh1B?usp=drive_link).
 
-## Data
+We use `mlflow` for our logging and experiment tracking, which is installed as part of the virtual environment. To use
+`mlflow` interactively, run the following from the virtual environment on the machine where you're training:
+
+`mflow ui --host 0.0.0.0 --port <port-number>`
+
+Which deploys an mlflow server on port `<port-number>`. Then use the browser on your local machine to access:
+
+`<machine-ip>:<port-number>`
+
+### Dataset format
 
 Training relies on CDR/epitope structural information. We have found that 
 these data types are best stored using `hdf5` format. The basic structure we choose 
@@ -106,7 +118,42 @@ to use is as follows:
             - "sequence" (M,) array of integers 0-19, based on sorted 3-letter AA codes
 ```
 
-However our pipeline can handle any format so long as the key format
+However our pipeline can handle any format so long as the key/value structure
 from `receptor`/`ligand` and below is consistent. In our case, `receptor` refers to the 
 epitope and `ligand` refers to the CDR loop.
 
+### Config
+
+The config file is a YAML file containing all the hyperparameters for training. 
+The possible options (for both `frames` and `coords` models) are as follows:
+
+- `learning_rate`: Learning rate used for training (default: `1e-4`) 
+- `batch_size`: Batch size used for training. The default of 128 requires about 30Gb of GPU memory. (default: `128`)
+- `self_conditioning_rate`: Rate at which self-conditioning will be trained. Implementation
+is the same as RFDiffusion (default: `0.5`)
+- `num_time_steps`: Number of time steps to use for the diffusion discretisation (default: `100`).
+- `min_trans_beta`: Minimum value of the coefficients used to calculate variances for the noised translations (default: `1e-4`)
+- `max_trans_beta`: Maximum value of the coefficients used to calculate variances for the noised translations (default: `20.0`)
+- `translation_beta_schedule`: Schedule to use for the coefficients used to calculate variances for the noised translations. (default: `linear`)
+- `time_step_encoding_channels`: Number of features to use for the sinusoidal time step encoding. (default: `5`)
+- `use_cdr_positional_encoding`: Whether to use a positional encoding for ligand (CDR) residues. This should
+only be used if ligands are linear polypeptide fragments, and it assumes the coordinate arrays in the dataset
+file are N-to-C ordered in the input HDF5 file. (default: `True`)
+- `positional_encoding_channels`: Number of features to use for the positional encoding. (default: `5`)
+- `hidden_scalar_channels`: Dimensionality of the hidden layer node scalar features in the GVP-GNN. (default: `128`)
+- `hidden_vector_channels`: Dimensionality of the hidden layer node vector features in the GVP-GNN. (default: `64`)
+- `hidden_edge_scalar_channels`: Dimensionality of the hidden layer edge scalar features in the GVP-GNN. (default: `64`)
+- `hidden_edge_vector_channels`: Dimensionality of the hidden layer edge vector features in the GVP-GNN. (default: `32`)
+- `num_layers`: Number of message passing layers in the GVP-GNN. (default: `3`)
+- `dropout`: Dropout rate to use in the GVP-GNN. (default: `0.2`)
+- `aggr`: Message aggregation method to use in the GVP-GNN. (default: `sum`)
+
+For the `frames` models, there are a few additional parameters:
+- `rotation_beta_schedule`: Schedule to use for the coefficients used to calculate variances for the noised rotations. (default: `logarithmic`)
+- `min_rot_beta`: Minimum value of the coefficients used to calculate variances for the noised rotations (default: `0.1`)
+- `max_rot_beta`: Maximum value of the coefficients used to calculate variances for the noised rotations (default: `1.5`)
+- `igso3_support_n`: Number of terms used to discretise angles of rotation when sampling from IGSO3. (default: `2000`)
+- `igso3_expansion_n`: Number of terms used to approximate the infinite sum in the IGSO3 density function (default: `2000`)
+
+All of these parameters can be passed in an input config YAML file to the `train` command. When using `generate`
+with a trained model, the same config file should be passed as an argument.
