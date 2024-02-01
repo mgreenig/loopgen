@@ -8,11 +8,12 @@ from typing import Optional, Tuple, Any, Union, List
 from functools import partial
 
 import torch
+import math
 import numpy as np
 from torch_geometric.data import HeteroData
 
 from .types import ProteinGraph
-from ..utils import node_type_subgraph
+from ..utils import node_type_subgraph, combine_coords
 from ..structure import Structure, OrientationFrames
 from ..graph import StructureData
 
@@ -271,6 +272,44 @@ def sinusoidal_encoding(value: torch.Tensor, channels: torch.Tensor, base: int =
     return encoding
 
 
+def axis_angle_to_matrix(axis, angle_radians):
+    """
+    Converts a rotation from an axis-angle representation to a rotation matrix.
+
+    Parameters:
+    - axis: torch.Tensor of shape (3,) - Arbitrary axis of rotation.
+    - angle_degrees: float - Rotation angle in radians.
+
+    Returns:
+    - rotation_matrix: torch.Tensor of shape (3, 3) - Tensor containing the rotation matrix.
+    """
+
+    axis = axis / torch.norm(axis)
+
+    # Rodrigues' rotation formula
+    cos_theta = math.cos(angle_radians)
+    sin_theta = math.sin(angle_radians)
+    cross_product_matrix = torch.tensor(
+        [[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]]
+    )
+
+    rotation_matrix = (
+        torch.eye(3)
+        + sin_theta * cross_product_matrix
+        + (1 - cos_theta) * torch.matmul(cross_product_matrix, cross_product_matrix)
+    )
+
+    return rotation_matrix
+
+
+def compute_axis(t1: torch.tensor, t2: torch.tensor):
+    return torch.cross(t1, t2)
+
+
+def compute_angle(t1: torch.tensor, t2: torch.tensor):
+    return torch.arccos(torch.dot(t1, t2) / (torch.norm(t1) * torch.norm(t2)))
+
+
 def permute_epitopes(
     structures: List[Tuple[str, Structure, Union[Structure, OrientationFrames]]],
     align: bool = True,
@@ -281,13 +320,12 @@ def permute_epitopes(
 
     :param structures: A list of structure tuples of the form (names, epitope, cdr).
     :param align: Whether to align the permuted epitope to the original epitope by aligning
-        their principal components.
+        their difference vectors.
     :returns: List of the same form as the input list of structures, but with the epitopes permuted.
     """
     names, epitopes, cdrs = map(tuple, zip(*structures))
-    epitopes_permuted = [
-        epitopes[i].clone() for i in np.random.permutation(len(epitopes))
-    ]
+    permutation = np.random.permutation(len(epitopes))
+    epitopes_permuted = [epitopes[i].clone() for i in permutation]
 
     if align is True:
         cdrs_aligned = []
@@ -295,14 +333,16 @@ def permute_epitopes(
         for i in range(len(epitopes_permuted)):
             epitope = epitopes[i]
             cdr = cdrs[i]
+            cdr_centered, cdr_center = cdr.center()
+            _, epitope_center = epitope.center()
 
-            epitope_centered, epitope_centre = epitope.center()
-            cdr_centered = cdr.translate(-epitope_centre)
+            perm_epitope_centered, _ = epitopes_permuted[i].center()
 
-            permuted_receptor_aligned = epitopes_permuted[i].align_to_pcs(
-                epitope_centered
+            ref_vector_WT_epitope = cdr_center - epitope_center
+
+            permuted_receptor_aligned = perm_epitope_centered.translate(
+                -ref_vector_WT_epitope
             )
-
             epitopes_permuted_aligned.append(permuted_receptor_aligned)
             cdrs_aligned.append(cdr_centered)
 

@@ -1368,56 +1368,6 @@ class Structure:
             ptr=self.ptr,
         )
 
-    def align_to_pcs(self, target: Structure) -> Structure:
-        """
-        Aligns the structure to a target structure by aligning
-        the principal components. Returns a new Structure object with the aligned coordinates.
-        This assumes the target structure is centered at zero.
-
-        :param target: Target structure whose principal components the structure will be aligned to.
-        :returns: Structure with aligned coordinates.
-        """
-        target_coords = combine_coords(
-            target.N_coords, target.CA_coords, target.C_coords, target.CB_coords
-        )
-
-        _, target_centre = target.center()
-        if not torch.allclose(
-            target_centre, torch.zeros_like(target_centre), atol=1e-3
-        ):
-            raise ValueError("Target structure must be centered at zero.")
-
-        centered_structure = self.center(return_centre=False)
-        all_coords = combine_coords(
-            centered_structure.N_coords,
-            centered_structure.CA_coords,
-            centered_structure.C_coords,
-            centered_structure.CB_coords,
-        )
-
-        if self.has_batch:
-            all_coords = expand_batch_tensor(all_coords, torch.diff(self.ptr) * 4)
-
-        if target.has_batch:
-            target_coords = expand_batch_tensor(
-                target_coords, torch.diff(target.ptr) * 4
-            )
-
-        # get the principal components
-        _, _, target_pcs = torch.pca_lowrank(target_coords, center=False)
-        _, _, structure_pcs = torch.pca_lowrank(all_coords, center=False)
-
-        # get the rotation that aligns the structure_pcs to the target_pcs
-        align_rot = torch.matmul(target_pcs, structure_pcs.transpose(-2, -1))
-
-        if self.has_batch and not target.has_batch:
-            num_per_batch = torch.diff(self.ptr)
-            align_rot = torch.repeat_interleave(align_rot, num_per_batch, dim=0)
-
-        aligned_structure = centered_structure.rotate(align_rot)
-
-        return aligned_structure
-
     def scramble_sequence(self):
         """Randomly scrambles the Structure's sequence (i.e. permuting the amino acid identities)."""
         scramble_indices = torch.randperm(
@@ -1429,19 +1379,14 @@ class Structure:
         old_glycine_mask = (scrambled_sequence != AminoAcid3["GLY"].value) & (
             self.sequence == AminoAcid3["GLY"].value
         )
-        num_changed_glycines = torch.sum(old_glycine_mask).item()
-        num_cbs_to_sample = len(self) - num_changed_glycines
-        new_cb_coord_indices = torch.randint(
-            low=0,
-            high=num_cbs_to_sample,
-            size=(num_changed_glycines,),
-            device=self.CB_coords.device,
-        )
-        new_cb_coords = self.CB_coords[~old_glycine_mask][new_cb_coord_indices]
 
         scrambled_structure = self.clone()
         scrambled_structure.sequence = scrambled_sequence
-        scrambled_structure.CB_coords[old_glycine_mask] = new_cb_coords
+        scrambled_structure.CB_coords[old_glycine_mask] = impute_CB_coords(
+            scrambled_structure.N_coords[old_glycine_mask],
+            scrambled_structure.CA_coords[old_glycine_mask],
+            scrambled_structure.C_coords[old_glycine_mask],
+        )
 
         return scrambled_structure
 
