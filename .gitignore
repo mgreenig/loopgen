@@ -20,3 +20,5 @@ slurm*
 
 *.egg-info/
 build/
+
+notebooks

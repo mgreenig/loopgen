@@ -74,14 +74,14 @@ def logarithmic_beta_schedule(
 
 def sigmoid_var_schedule(
     num_time_steps: int,
-    min_var: float,
-    max_var: float,
-    min_beta: int = -6,
-    max_beta: int = 6,
+    min_beta: float,
+    max_beta: float,
+    min_x: int = -6,
+    max_x: int = 6,
 ) -> torch.Tensor:
     """Sigmoid-scaled sequence of variances."""
-    betas = torch.linspace(min_beta, max_beta, num_time_steps)
-    return torch.sigmoid(betas) * (max_var - min_var) + min_var
+    coef = torch.linspace(min_x, max_x, num_time_steps)
+    return torch.sigmoid(coef) * (max_beta - min_beta)
 
 
 def cumulative_integral(
@@ -171,7 +171,6 @@ class BetaScheduleSelector:
 
 
 class DiffusionForwardProcess(ABC):
-
     """
     Abstract class for the forward process in a diffusion model,
     which samples scores (gradients of the log density) for a
@@ -206,7 +205,6 @@ class DiffusionForwardProcess(ABC):
 
 
 class IGSO3ForwardProcess(DiffusionForwardProcess):
-
     """
     Diffusion model over the manifold of rotations SO(3).
     Samples rotations using the IGSO(3) distribution.
@@ -366,7 +364,6 @@ class IGSO3ForwardProcess(DiffusionForwardProcess):
 
 
 class Gaussian3DForwardProcess(DiffusionForwardProcess):
-
     """
     Forward process in three dimensions using a gaussian distribution.
     This assumes the input gaussian distributions have identical variance
@@ -507,7 +504,6 @@ class DiffusionReverseProcess(nn.Module, ABC):
 
 
 class SO3ReverseProcess(DiffusionReverseProcess):
-
     """
     This class implements the reverse process on SO3 as a geodesic
     random walk on the manifold of 3D rotations as described
@@ -581,7 +577,6 @@ class SO3ReverseProcess(DiffusionReverseProcess):
 
 
 class R3ReverseProcess(DiffusionReverseProcess):
-
     """
     Here we implement the reverse process on R3 using the DDPM formulation from
     Ho et al https://arxiv.org/pdf/2006.11239.pdf. Note that this is the same method used by FrameDiff,
