@@ -61,6 +61,11 @@ def add_generate_args(parser: argparse.ArgumentParser) -> None:
         help="Path to the HDF5 data file or a PDB file containing epitope data to be used for generation.",
     )
     parser.add_argument(
+        "--checkpoint",
+        required=True,
+        help="Path to a PyTorch checkpoint file containing model weights.",
+    )
+    parser.add_argument(
         "--config",
         type=str,
         required=True,
@@ -75,11 +80,6 @@ def add_generate_args(parser: argparse.ArgumentParser) -> None:
         "If provided, structures will only be generated for the test set. "
         "If not provided, structures will be generated "
         "for all instances in the input HDF5 file.",
-    )
-    parser.add_argument(
-        "--checkpoint",
-        required=True,
-        help="Path to a PyTorch checkpoint file containing model weights.",
     )
     parser.add_argument(
         "-n",

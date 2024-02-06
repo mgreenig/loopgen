@@ -77,7 +77,6 @@ MAX_COV_BOND_LEN: float = 1.9
 
 
 class BondLengths(Enum):
-
     """
     Enum for storing backbone bond lengths, taken from:
 
@@ -92,7 +91,6 @@ class BondLengths(Enum):
 
 
 class BondLengthStdDevs(Enum):
-
     """
     Enum for storing standard deviations in backbone bond lengths, taken from:
 
@@ -143,7 +141,6 @@ class BondAngleCosineStdDevs(Enum):
 
 
 class AtomVanDerWaalRadii(Enum):
-
     """
     Enum for storing atomic van der waal radii, taken from table 1:
 
@@ -158,7 +155,6 @@ class AtomVanDerWaalRadii(Enum):
 
 
 class AtomMasses(Enum):
-
     """
     Enum for storing atomic masses.
     """
@@ -170,7 +166,6 @@ class AtomMasses(Enum):
 
 
 class OrientationFrames:
-
     """
     Class for storing orientation frames for a set of residues. Specifically a single orientation frame
     consists of a (3, 3) rotation matrix specifying the orientation of the residue and a (3,) translation vector
@@ -698,7 +693,6 @@ def impute_O_coords(
 
 
 class Structure:
-
     """
     Class for storing simplified atom coordinate and amino acid sequence information for a protein structure.
     Specifically, this class stores N, CA, C, and CB coordinates for each residue, as well as the amino acid
@@ -1482,7 +1476,6 @@ class Structure:
 
 
 class LinearStructure(Structure):
-
     """
     Extends Structure to specifically work with linear peptide chains,
     adding functions for calculating chain-based structural features like dihedral angles.
